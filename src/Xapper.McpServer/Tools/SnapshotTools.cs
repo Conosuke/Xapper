@@ -20,9 +20,13 @@ public sealed class SnapshotTools
         _sessionManager = sessionManager;
     }
 
-    [McpServerTool(Name = "xapper_snapshot"), Description("Get a snapshot of the UI visual tree with element refs for subsequent actions")]
+    [McpServerTool(Name = "xapper_snapshot"), Description(
+        "Visual-tree snapshot with a ref per element. It invalidates ALL earlier refs (from find too) and " +
+        "renumbers. The root is the window, or a synthetic Application node whenever several top-level " +
+        "windows (popups, menus, tooltips) are open - do not key on it. Keep maxDepth small (default 5): " +
+        "responses grow exponentially; to go deeper, pass a container's ref as rootRef.")]
     public async Task<string> Snapshot(
-        [Description("Root element ref to snapshot from (omit for full window)")] int? rootRef = null,
+        [Description("Ref to start from, taken from the previous snapshot or from xapper_find (omit for the whole window)")] int? rootRef = null,
         [Description("Max depth to traverse (default 5)")] int maxDepth = 5,
         [Description("Output format: 'text' (compact) or 'json' (structured)")] string format = "text",
         CancellationToken ct = default)
@@ -44,6 +48,8 @@ public sealed class SnapshotTools
     {
         var sb = new StringBuilder();
         sb.AppendLine($"Generation: {response.Generation}");
+        if (response.SkippedNodes.Count > 0)
+            sb.AppendLine($"Skipped: {response.SkippedNodes.Count} unreadable node(s) (use format=\"json\" to see where)");
         sb.AppendLine();
         FormatElement(sb, response.Root, 0);
         return sb.ToString();

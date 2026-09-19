@@ -54,23 +54,47 @@ public sealed class InspectorClient : IAsyncDisposable
     /// <returns>Inspector로부터 수신한 응답 메시지.</returns>
     public async Task<IpcMessage> SendAsync(IpcMessage request, CancellationToken ct = default)
     {
-        if (_pipe == null || !_pipe.IsConnected)
-            throw new InvalidOperationException("Not connected to inspector");
+        var bytes = IpcSerializer.Serialize(request);
 
         await _sendLock.WaitAsync(ct);
         try
         {
-            var bytes = IpcSerializer.Serialize(request);
-            await _pipe.WriteAsync(bytes, ct);
-            await _pipe.FlushAsync(ct);
+            // 연결 상태는 잠금 안에서 확인하고 지역 변수로 붙든다.
+            // 앞선 호출이 어긋난 연결을 끊으면 _pipe가 null이 되므로, 잠금 밖에서 통과한 검사는 이미 낡은 것이다.
+            var pipe = _pipe;
+            if (pipe is null || !pipe.IsConnected)
+                throw new InvalidOperationException("Not connected to inspector");
 
-            var response = await IpcSerializer.DeserializeAsync(_pipe, ct);
+            await pipe.WriteAsync(bytes, ct);
+            await pipe.FlushAsync(ct);
+
+            var response = await IpcSerializer.DeserializeAsync(pipe, ct);
             return response ?? throw new InvalidOperationException("Received null response");
+        }
+        catch
+        {
+            // 요청을 보낸 뒤 응답을 끝까지 읽지 못하면 읽다 만 바이트가 파이프에 남는다.
+            // 길이 접두사가 한 칸 밀린 채로는 이후 모든 응답이 엉뚱하게 해석되고 되돌릴 방법이 없으므로,
+            // 어긋난 연결을 조용히 계속 쓰는 대신 끊어서 다음 호출이 재연결을 요구하게 한다.
+            await DisconnectAsync();
+            throw;
         }
         finally
         {
             _sendLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Named Pipe 연결을 끊고 연결 상태를 해제합니다.
+    /// </summary>
+    private async Task DisconnectAsync()
+    {
+        if (_pipe is null)
+            return;
+
+        await _pipe.DisposeAsync();
+        _pipe = null;
     }
 
     #endregion
@@ -92,58 +116,104 @@ public sealed class InspectorClient : IAsyncDisposable
         return await SendAsync(request, ct);
     }
 
-    /// <summary>UI 요소를 클릭합니다.</summary>
-    public async Task<IpcMessage> ClickAsync(int @ref, int timeout = 5000, double? x = null, double? y = null, CancellationToken ct = default)
+    /// <summary>UI 요소를 클릭합니다. 요소는 ref 또는 target selector 로 지정하고, 좌표 클릭에는 수식키를 함께 걸 수 있다.</summary>
+    public async Task<IpcMessage> ClickAsync(int? @ref, string? target = null, int timeout = 5000, double? x = null, double? y = null,
+        bool doubleClick = false, string? modifiers = null, CancellationToken ct = default)
     {
-        var payload = new { @ref, timeout, x, y };
+        var payload = new { @ref, target, timeout, x, y, doubleClick, modifiers };
         var request = IpcSerializer.CreateRequest("click", payload);
         return await SendAsync(request, ct);
     }
 
     /// <summary>UI 요소에 텍스트를 입력합니다.</summary>
-    public async Task<IpcMessage> TypeAsync(int @ref, string text, bool clear = true, int timeout = 5000, CancellationToken ct = default)
+    public async Task<IpcMessage> TypeAsync(int? @ref, string? target, string text, bool clear = true, int timeout = 5000, CancellationToken ct = default)
     {
-        var payload = new { @ref, text, clear, timeout };
+        var payload = new { @ref, target, text, clear, timeout };
         var request = IpcSerializer.CreateRequest("type", payload);
         return await SendAsync(request, ct);
     }
 
-    /// <summary>Selector 컨트롤에서 항목을 선택합니다.</summary>
-    public async Task<IpcMessage> SelectAsync(int @ref, string? itemText = null, int? itemIndex = null, int timeout = 5000, CancellationToken ct = default)
+    /// <summary>키보드 포커스 요소(또는 지정 ref)에 키를 넣습니다. 전경 창과 무관하게 대상 앱 안에서 라우팅합니다.</summary>
+    public async Task<IpcMessage> KeyAsync(string key, string? modifiers = null, int? @ref = null, string? target = null, int timeout = 5000, CancellationToken ct = default)
     {
-        var payload = new { @ref, itemText, itemIndex, timeout };
+        var payload = new { key, modifiers, @ref, target, timeout };
+        var request = IpcSerializer.CreateRequest("key", payload);
+        return await SendAsync(request, ct);
+    }
+
+    /// <summary>요소 위 한 지점에서 휠을 굴립니다. 대상 프로세스 안에서 수행해 커서를 옮기지 않습니다.</summary>
+    public async Task<IpcMessage> WheelAsync(int? @ref, string? target, int notches, double? x = null, double? y = null,
+        string? modifiers = null, int timeout = 5000, CancellationToken ct = default)
+    {
+        var payload = new { @ref, target, notches, x, y, modifiers, timeout };
+        var request = IpcSerializer.CreateRequest("wheel", payload);
+        return await SendAsync(request, ct);
+    }
+
+    /// <summary>요소 위 한 지점을 우클릭합니다. 대상 프로세스 안에서 수행해 커서를 옮기지 않습니다.</summary>
+    public async Task<IpcMessage> RightClickAsync(int? @ref, string? target = null, double? x = null, double? y = null,
+        string? modifiers = null, int timeout = 5000, CancellationToken ct = default)
+    {
+        var payload = new { @ref, target, x, y, modifiers, timeout };
+        var request = IpcSerializer.CreateRequest("rightclick", payload);
+        return await SendAsync(request, ct);
+    }
+
+    /// <summary>Selector 컨트롤에서 항목을 선택합니다.</summary>
+    public async Task<IpcMessage> SelectAsync(int? @ref, string? target = null, string? itemText = null, int? itemIndex = null, int timeout = 5000, CancellationToken ct = default)
+    {
+        var payload = new { @ref, target, itemText, itemIndex, timeout };
         var request = IpcSerializer.CreateRequest("select", payload);
         return await SendAsync(request, ct);
     }
 
     /// <summary>토글 상태를 전환합니다.</summary>
-    public async Task<IpcMessage> ToggleAsync(int @ref, int timeout = 5000, CancellationToken ct = default)
+    public async Task<IpcMessage> ToggleAsync(int? @ref, string? target = null, int timeout = 5000, CancellationToken ct = default)
     {
-        var payload = new { @ref, timeout };
+        var payload = new { @ref, target, timeout };
         var request = IpcSerializer.CreateRequest("toggle", payload);
         return await SendAsync(request, ct);
     }
 
     /// <summary>TreeViewItem/Expander를 확장 또는 축소합니다.</summary>
-    public async Task<IpcMessage> ExpandAsync(int @ref, bool expand = true, int timeout = 5000, CancellationToken ct = default)
+    public async Task<IpcMessage> ExpandAsync(int? @ref, string? target = null, bool expand = true, int timeout = 5000, CancellationToken ct = default)
     {
-        var payload = new { @ref, expand, timeout };
+        var payload = new { @ref, target, expand, timeout };
         var request = IpcSerializer.CreateRequest("expand", payload);
         return await SendAsync(request, ct);
     }
 
     /// <summary>ScrollViewer의 스크롤 위치를 변경합니다.</summary>
-    public async Task<IpcMessage> ScrollAsync(int @ref, double horizontalPercent = -1, double verticalPercent = -1, int timeout = 5000, CancellationToken ct = default)
+    public async Task<IpcMessage> ScrollAsync(int? @ref, string? target = null, double horizontalPercent = -1, double verticalPercent = -1, int timeout = 5000, CancellationToken ct = default)
     {
-        var payload = new { @ref, horizontalPercent, verticalPercent, timeout };
+        var payload = new { @ref, target, horizontalPercent, verticalPercent, timeout };
         var request = IpcSerializer.CreateRequest("scroll", payload);
         return await SendAsync(request, ct);
     }
 
-    /// <summary>요소의 프로퍼티 값을 조회합니다.</summary>
-    public async Task<IpcMessage> GetPropertyAsync(int @ref, string propertyName, CancellationToken ct = default)
+    /// <summary>마우스 버튼을 누른 채 두 지점 사이를 드래그합니다. 수식키를 함께 걸 수 있다(Ctrl+드래그 등).</summary>
+    public async Task<IpcMessage> DragAsync(
+        int? sourceRef = null,
+        double? sourceX = null,
+        double? sourceY = null,
+        int? targetRef = null,
+        double? targetX = null,
+        double? targetY = null,
+        double? offsetX = null,
+        double? offsetY = null,
+        string? modifiers = null,
+        int timeout = 5000,
+        CancellationToken ct = default)
     {
-        var payload = new { @ref, propertyName };
+        var payload = new { sourceRef, sourceX, sourceY, targetRef, targetX, targetY, offsetX, offsetY, modifiers, timeout };
+        var request = IpcSerializer.CreateRequest("drag", payload);
+        return await SendAsync(request, ct);
+    }
+
+    /// <summary>요소의 프로퍼티 값을 조회합니다.</summary>
+    public async Task<IpcMessage> GetPropertyAsync(int? @ref, string? target, string propertyName, CancellationToken ct = default)
+    {
+        var payload = new { @ref, target, propertyName };
         var request = IpcSerializer.CreateRequest("getProperty", payload);
         return await SendAsync(request, ct);
     }
@@ -157,18 +227,26 @@ public sealed class InspectorClient : IAsyncDisposable
     }
 
     /// <summary>윈도우 또는 요소의 스크린샷을 캡처합니다.</summary>
-    public async Task<IpcMessage> ScreenshotAsync(int? @ref = null, CancellationToken ct = default)
+    public async Task<IpcMessage> ScreenshotAsync(int? @ref = null, int? maxWidth = null, string? mode = null, CancellationToken ct = default)
     {
-        var payload = new { @ref };
+        var payload = new { @ref, maxWidth, mode };
         var request = IpcSerializer.CreateRequest("screenshot", payload);
         return await SendAsync(request, ct);
     }
 
     /// <summary>프로퍼티 값 검증(assert)을 수행합니다.</summary>
-    public async Task<IpcMessage> AssertAsync(int @ref, string property, string expected, CancellationToken ct = default)
+    public async Task<IpcMessage> AssertAsync(int? @ref, string? target, string property, string expected, CancellationToken ct = default)
     {
-        var payload = new { @ref, property, expected };
+        var payload = new { @ref, target, property, expected };
         var request = IpcSerializer.CreateRequest("assert", payload);
+        return await SendAsync(request, ct);
+    }
+
+    /// <summary>화면 좌표에 있는 요소와 그 조상을 조회합니다.</summary>
+    public async Task<IpcMessage> ElementAtAsync(double x, double y, int maxAncestors = 4, CancellationToken ct = default)
+    {
+        var payload = new { x, y, maxAncestors };
+        var request = IpcSerializer.CreateRequest("elementAt", payload);
         return await SendAsync(request, ct);
     }
 
@@ -189,11 +267,7 @@ public sealed class InspectorClient : IAsyncDisposable
     /// </summary>
     public async ValueTask DisposeAsync()
     {
-        if (_pipe != null)
-        {
-            await _pipe.DisposeAsync();
-            _pipe = null;
-        }
+        await DisconnectAsync();
         _sendLock.Dispose();
     }
 

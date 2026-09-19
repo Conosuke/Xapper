@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using ModelContextProtocol.Server;
 using Xapper.Injector;
+using Xapper.McpServer.Infrastructure;
 
 namespace Xapper.McpServer.Tools;
 
@@ -14,6 +15,7 @@ public sealed class ProcessTools
 
     private readonly SessionManager _sessionManager;
     private readonly WpfProcessInjector _injector;
+    private readonly IOperatorNotice _notice;
 
     #endregion
 
@@ -22,10 +24,11 @@ public sealed class ProcessTools
     /// <summary>
     /// <see cref="ProcessTools"/>의 새 인스턴스를 생성합니다.
     /// </summary>
-    public ProcessTools(SessionManager sessionManager, WpfProcessInjector injector)
+    public ProcessTools(SessionManager sessionManager, WpfProcessInjector injector, IOperatorNotice notice)
     {
         _sessionManager = sessionManager;
         _injector = injector;
+        _notice = notice;
     }
 
     #endregion
@@ -112,7 +115,22 @@ public sealed class ProcessTools
         [Description("Process ID (optional, defaults to active session)")] int? pid = null,
         CancellationToken ct = default)
     {
-        await _sessionManager.DetachAsync(pid, ct);
+        try
+        {
+            await _sessionManager.DetachAsync(pid, ct);
+        }
+        catch (InvalidOperationException)
+        {
+            // DetachAsync 는 활성 세션이 없을 때만 이 예외를 던진다 — 이미 분리된 상태이므로 오류가 아니다.
+            // (다른 예외는 삼키지 않는다: 연결 정리가 실제로 실패한 것을 성공으로 위장하면 세션이 어긋난 채 남는다.)
+            await _notice.HideAsync(ct);
+            return "Already detached (no active session).";
+        }
+
+        // 세션이 끝나면 조작도 끝난 것이다. 알림이 남아 사람이 헛되이 기다리지 않게 내린다 — 분리가 거절된
+        // 경우(다른 pid)는 세션이 살아 있으므로 그대로 둔다.
+        await _notice.HideAsync(ct);
+
         return pid.HasValue
             ? $"Detached from process {pid}."
             : "Detached from active session.";
