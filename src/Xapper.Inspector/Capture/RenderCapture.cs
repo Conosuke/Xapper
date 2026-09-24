@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Media;
@@ -18,9 +19,14 @@ public static class RenderCapture
     /// </summary>
     /// <param name="element">캡처할 UI 요소.</param>
     /// <param name="maxWidth">인코딩할 최대 가로 픽셀 수. 원본이 더 넓으면 비율을 유지한 채 축소. null이면 축소하지 않음.</param>
+    /// <param name="marks">
+    /// 겹쳐 그릴 번호 상자. null 이거나 비어 있으면 아무것도 그리지 않는다. 사각형은 <paramref name="element"/> 의
+    /// DIP 좌표계 기준이므로, 같은 비트맵에 한 번 더 그리면 DPI 배율과 축소 배율이 자동으로 함께 적용된다.
+    /// </param>
     /// <returns>Base64 인코딩된 PNG 이미지와 인코딩된 픽셀 크기.</returns>
     /// <exception cref="InvalidOperationException">요소에 렌더링 가능한 영역이 없는 경우.</exception>
-    public static ScreenshotResponse CaptureElement(UIElement element, int? maxWidth = null)
+    public static ScreenshotResponse CaptureElement(
+        UIElement element, int? maxWidth = null, IReadOnlyList<MarkCandidate>? marks = null)
     {
         var bounds = VisualTreeHelper.GetDescendantBounds(element);
         if (bounds.IsEmpty)
@@ -41,6 +47,9 @@ public static class RenderCapture
 
         renderBitmap.Render(element);
 
+        if (marks is { Count: > 0 })
+            renderBitmap.Render(BuildOverlay(marks, dpi.PixelsPerDip));
+
         var encoder = new PngBitmapEncoder();
         encoder.Frames.Add(BitmapFrame.Create(renderBitmap));
 
@@ -58,6 +67,55 @@ public static class RenderCapture
             OriginY = origin?.Y,
             Scale = scale
         };
+    }
+
+    /// <summary>번호 상자 외곽선의 두께 (DIP).</summary>
+    private const double MarkLineThickness = 2;
+
+    /// <summary>번호 라벨의 글자 크기 (DIP).</summary>
+    private const double MarkFontSize = 11;
+
+    /// <summary>
+    /// 번호 상자를 그린 시각 요소를 만듭니다. 캡처 대상과 같은 DIP 좌표계에 그리므로 픽셀 변환을 하지 않는다.
+    ///
+    /// 좌표를 옮기지 않는 이유가 중요하다. <c>RenderTargetBitmap.Render</c> 는 요소의 <b>자기 원점</b>을 비트맵
+    /// (0,0) 에 놓고 음수 좌표에 있는 것은 잘라낸다. 자손 경계(<c>GetDescendantBounds</c>)의 왼쪽 위에 맞추는 것이
+    /// 아니다. 경계는 비트맵의 크기를 정하는 데만 쓰인다. 그래서 겹쳐 그리는 쪽도 같은 원점을 써야 하며,
+    /// 경계 원점만큼 옮기면 자손이 음수 좌표까지 뻗은 화면에서 상자가 그만큼 밀려 엉뚱한 컨트롤 위에 그려진다.
+    /// </summary>
+    private static DrawingVisual BuildOverlay(IReadOnlyList<MarkCandidate> marks, double pixelsPerDip)
+    {
+        var outline = new Pen(Brushes.Red, MarkLineThickness);
+        var label = Brushes.Red;
+        var visual = new DrawingVisual();
+
+        using var context = visual.RenderOpen();
+
+        foreach (var mark in marks)
+        {
+            context.DrawRectangle(null, outline, mark.Rect);
+
+            var text = new FormattedText(
+                mark.Number.ToString(CultureInfo.InvariantCulture),
+                CultureInfo.InvariantCulture,
+                FlowDirection.LeftToRight,
+                new Typeface("Segoe UI"),
+                MarkFontSize,
+                Brushes.White,
+                pixelsPerDip);
+
+            // 번호는 요소 바깥 왼쪽에 얹는다. 요소 안에 그리면 바로 그 자리에 있는 글자를 덮어, 그림을
+            // 읽으려고 찍은 목적을 해친다(실측: "Alpha" 가 "pha" 로 보였다). 컨트롤의 글자는 대개 왼쪽에
+            // 붙으므로 왼쪽 바깥이 가장 비어 있고, 자리가 없을 때만 안으로 접어 넣는다.
+            var plateWidth = text.Width + 6;
+            var plateHeight = text.Height + 2;
+            var plateX = mark.Rect.X - plateWidth >= 0 ? mark.Rect.X - plateWidth : mark.Rect.X;
+            var plate = new Rect(plateX, mark.Rect.Y, plateWidth, plateHeight);
+            context.DrawRectangle(label, null, plate);
+            context.DrawText(text, new Point(plate.X + 3, plate.Y + 1));
+        }
+
+        return visual;
     }
 
     /// <summary>
@@ -100,13 +158,15 @@ public static class RenderCapture
     /// </summary>
     /// <param name="window">캡처할 윈도우. null이면 Application.Current.MainWindow 사용.</param>
     /// <param name="maxWidth">인코딩할 최대 가로 픽셀 수. null이면 축소하지 않음.</param>
+    /// <param name="marks">겹쳐 그릴 번호 상자. null 이거나 비어 있으면 아무것도 그리지 않는다.</param>
     /// <returns>Base64 인코딩된 PNG 이미지와 인코딩된 픽셀 크기.</returns>
-    public static ScreenshotResponse CaptureWindow(Window? window = null, int? maxWidth = null)
+    public static ScreenshotResponse CaptureWindow(
+        Window? window = null, int? maxWidth = null, IReadOnlyList<MarkCandidate>? marks = null)
     {
         window ??= Application.Current.MainWindow;
         if (window == null)
             throw new InvalidOperationException("No window available to capture");
 
-        return CaptureElement(window, maxWidth);
+        return CaptureElement(window, maxWidth, marks);
     }
 }

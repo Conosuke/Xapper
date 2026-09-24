@@ -29,19 +29,43 @@ public sealed class IpcServer
     private readonly TreeWalker _treeWalker = new();
     private CancellationTokenSource? _cts;
 
+    /// <summary>
+    /// 앱이 WPF Application 을 만들 때까지 기다릴 시간. null 이면 기다리지 않는다.
+    /// 주입 경로는 이미 떠 있는 앱에 들어가므로 기다릴 이유가 없고, startup hook 경로만 이 값을 받는다.
+    /// </summary>
+    private readonly TimeSpan? _applicationWait;
+
+    /// <summary>Application 이 생겼는지 다시 묻는 간격.</summary>
+    private static readonly TimeSpan ApplicationWaitPoll = TimeSpan.FromMilliseconds(50);
+
+    /// <summary>annotate 스크린샷에 그릴 번호 상자의 최대 개수. 넘으면 면적이 작은 것을 남긴다.</summary>
+    private const int MaxScreenshotMarks = 40;
+
+    /// <summary>번호 상자를 그릴 최소 너비·높이 (DIP). 더 작으면 번호를 얹을 자리가 없다.</summary>
+    private const double MinScreenshotMarkSize = 16;
+
+    /// <summary>화면 기록에 담을, 셀렉터로 지목되는 요소의 최대 개수.</summary>
+    private const int MaxScreenRegions = 50;
+
+    /// <summary>화면 기록에 덧붙일, 셀렉터가 없어 기준점으로만 지목되는 요소의 최대 개수.</summary>
+    private const int MaxAnchoredScreenRegions = 15;
+
     #endregion
 
     #region Constructor
 
-    /// <summary>
-    /// <see cref="IpcServer"/>의 새 인스턴스를 생성합니다.
-    /// </summary>
-    /// <param name="pipeName">수신 대기할 Named Pipe 이름.</param>
-    /// <param name="log">진단 메시지를 기록할 대상. 주입된 프로세스에서는 이것이 유일한 관찰 통로이다.</param>
-    public IpcServer(string pipeName, Action<string>? log = null)
+    /// <summary><see cref="IpcServer"/>를 만듭니다.</summary>
+    /// <param name="pipeName">수신할 명명 파이프 이름.</param>
+    /// <param name="log">진단 로그 기록기. 없으면 기록하지 않는다.</param>
+    /// <param name="applicationWait">
+    /// 앱이 WPF Application 을 만들기를 기다릴 시간. startup hook 으로 앱의 진입점보다 먼저 들어왔을 때만 준다 —
+    /// 주입 경로는 이미 떠 있는 앱에 들어가므로 null 이다.
+    /// </param>
+    public IpcServer(string pipeName, Action<string>? log = null, TimeSpan? applicationWait = null)
     {
         _pipeName = pipeName;
         _log = log;
+        _applicationWait = applicationWait;
     }
 
     #endregion
@@ -277,14 +301,36 @@ public sealed class IpcServer
     }
 
     /// <summary>
-    /// 제한 시간 안에 요소가 상호작용 가능한 상태가 되지 않았을 때의 오류 응답을 만듭니다.
+    /// 요소가 조작을 받을 상태가 되지 않았을 때의 오류 응답을 만듭니다.
+    /// 무엇이 막고 있었는지를 적어 주는 것이 핵심이다. 셋 다 늘어놓으면 부르는 쪽이 어느 것인지
+    /// 다시 물어보게 되고(실측: 매번 get_property 한 번이 뒤따랐다), 해야 할 일도 경우마다 다르다.
     /// </summary>
-    private static IpcMessage NotReadyError(string messageId, int elementRef, int timeoutMs)
+    /// <param name="messageId">응답에 실을 메시지 ID.</param>
+    /// <param name="elementRef">기다린 요소의 참조 번호.</param>
+    /// <param name="timeoutMs">요청이 허락한 대기 시간.</param>
+    /// <param name="waiter">기다림을 수행한 대기자. 마지막으로 본 상태를 읽는다.</param>
+    private static IpcMessage NotReadyError(
+        string messageId, int elementRef, int timeoutMs, AutoWait.ElementWaiter waiter)
     {
+        var state = waiter.LastState;
+        var obstacle = state is null ? "was not ready" : state.Obstacle;
+        var waited = waiter.StoppedEarly
+            ? "and Xapper stopped waiting rather than spending the rest of the timeout on it"
+            : $"for the whole {timeoutMs} ms wait";
+
+        var remedy = state switch
+        {
+            { Visible: false } => "Bring it into view first - open the tab, pane or dialog that holds it.",
+            { Loaded: false } => "Give the view longer with a higher timeout, or act after it has settled.",
+            { Enabled: false } =>
+                "The app is refusing this action, not Xapper. A longer timeout will not help. Find what enables " +
+                "the control - a required field, a selection, a mode - or accept that the action is unavailable " +
+                "here. If something asynchronous enables it, try once more.",
+            _ => "Re-read the state, or raise the timeout."
+        };
+
         return IpcSerializer.CreateError(messageId,
-            $"Element ref={elementRef} did not become visible, enabled and loaded within {timeoutMs} ms. " +
-            "It may be disabled until a form validates, hidden behind another view, or still loading. " +
-            "Re-read the state, or raise the timeout.");
+            $"Element ref={elementRef} {obstacle} {waited}, so the action did not run. {remedy}");
     }
 
     /// <summary>
@@ -376,6 +422,18 @@ public sealed class IpcServer
     {
         try
         {
+            // startup hook 으로 들어온 경우에만, 앱이 아직 WPF Application 을 만들지 않았을 수 있다. 그 구간을 넘기려고
+            // 요청이 갈라지기 직전 한 번 기다린다. 주입 경로(_applicationWait 가 null)는 이미 떠 있는 앱이라 그냥 지나간다.
+            // ping 은 연결 확인용이라 어느 경우에도 기다리지 않는다.
+            if (_applicationWait is { } wait && message.Method != "ping" && Application.Current is null)
+            {
+                var started = await AutoWait.WaitUntil.ReadyAsync(
+                    () => Application.Current is not null, wait, ApplicationWaitPoll);
+                if (!started)
+                    return IpcSerializer.CreateError(message.Id,
+                        "The app has not created its WPF Application yet - it may still be starting, or it may not be a WPF app.");
+            }
+
             return message.Method switch
             {
                 "ping" => await HandlePing(message),
@@ -393,6 +451,8 @@ public sealed class IpcServer
                 "getProperty" => await HandleGetProperty(message),
                 "getBindings" => await HandleGetBindings(message),
                 "screenshot" => await HandleScreenshot(message),
+                "screenProfile" => await HandleScreenProfile(message),
+                "events" => await HandleEvents(message),
                 "assert" => await HandleAssert(message),
                 "find" => await HandleFind(message),
                 "elementAt" => await HandleElementAt(message),
@@ -504,7 +564,7 @@ public sealed class IpcServer
 
         var waiter = new AutoWait.ElementWaiter(TimeSpan.FromMilliseconds(request.Timeout));
         if (!await waiter.WaitForReady(element))
-            return NotReadyError(message.Id, elementRef, request.Timeout);
+            return NotReadyError(message.Id, elementRef, request.Timeout, waiter);
 
         var withMods = modifiers == ModifierKeys.None ? "" : $" with {request.Modifiers?.Trim()}";
 
@@ -610,7 +670,7 @@ public sealed class IpcServer
 
         var waiter = new AutoWait.ElementWaiter(TimeSpan.FromMilliseconds(request.Timeout));
         if (!await waiter.WaitForReady(element))
-            return NotReadyError(message.Id, elementRef, request.Timeout);
+            return NotReadyError(message.Id, elementRef, request.Timeout, waiter);
 
         var rx = request.X ?? 0.5;
         var ry = request.Y ?? 0.5;
@@ -658,7 +718,7 @@ public sealed class IpcServer
 
         var waiter = new AutoWait.ElementWaiter(TimeSpan.FromMilliseconds(request.Timeout));
         if (!await waiter.WaitForReady(element))
-            return NotReadyError(message.Id, elementRef, request.Timeout);
+            return NotReadyError(message.Id, elementRef, request.Timeout, waiter);
 
         var rx = request.X ?? 0.5;
         var ry = request.Y ?? 0.5;
@@ -723,7 +783,7 @@ public sealed class IpcServer
 
         var waiter = new AutoWait.ElementWaiter(TimeSpan.FromMilliseconds(request.Timeout));
         if (!await waiter.WaitForReady(element))
-            return NotReadyError(message.Id, elementRef, request.Timeout);
+            return NotReadyError(message.Id, elementRef, request.Timeout, waiter);
 
         var (typeDone, result) = await RunOnUiThread(
             () => TypeAction.Execute(element, request.Text, request.Clear), request.Timeout);
@@ -762,7 +822,7 @@ public sealed class IpcServer
 
             var waiter = new AutoWait.ElementWaiter(TimeSpan.FromMilliseconds(request.Timeout));
             if (!await waiter.WaitForReady(refElement))
-                return NotReadyError(message.Id, elementRef, request.Timeout);
+                return NotReadyError(message.Id, elementRef, request.Timeout, waiter);
         }
 
         var (keyDone, keyResult) = await RunOnUiThread(
@@ -801,7 +861,7 @@ public sealed class IpcServer
 
         var waiter = new AutoWait.ElementWaiter(TimeSpan.FromMilliseconds(request.Timeout));
         if (!await waiter.WaitForReady(element))
-            return NotReadyError(message.Id, elementRef, request.Timeout);
+            return NotReadyError(message.Id, elementRef, request.Timeout, waiter);
 
         var (selectDone, result) = await RunOnUiThread(
             () => SelectAction.Execute(element, request.ItemText, request.ItemIndex), request.Timeout);
@@ -833,7 +893,7 @@ public sealed class IpcServer
 
         var waiter = new AutoWait.ElementWaiter(TimeSpan.FromMilliseconds(request.Timeout));
         if (!await waiter.WaitForReady(element))
-            return NotReadyError(message.Id, elementRef, request.Timeout);
+            return NotReadyError(message.Id, elementRef, request.Timeout, waiter);
 
         var (toggleDone, result) = await RunOnUiThread(() => ToggleAction.Execute(element), request.Timeout);
         if (!toggleDone)
@@ -864,7 +924,7 @@ public sealed class IpcServer
 
         var waiter = new AutoWait.ElementWaiter(TimeSpan.FromMilliseconds(request.Timeout));
         if (!await waiter.WaitForReady(element))
-            return NotReadyError(message.Id, elementRef, request.Timeout);
+            return NotReadyError(message.Id, elementRef, request.Timeout, waiter);
 
         var (expandDone, result) = await RunOnUiThread(
             () => ExpandAction.Execute(element, request.Expand), request.Timeout);
@@ -897,7 +957,7 @@ public sealed class IpcServer
 
         var waiter = new AutoWait.ElementWaiter(TimeSpan.FromMilliseconds(request.Timeout));
         if (!await waiter.WaitForReady(element))
-            return NotReadyError(message.Id, elementRef, request.Timeout);
+            return NotReadyError(message.Id, elementRef, request.Timeout, waiter);
 
         var (scrollDone, result) = await RunOnUiThread(
             () => ScrollAction.Execute(element, request.HorizontalPercent, request.VerticalPercent), request.Timeout);
@@ -935,9 +995,9 @@ public sealed class IpcServer
         var waiter = new AutoWait.ElementWaiter(TimeSpan.FromMilliseconds(request.Timeout));
         // source/target 이 null 이 아니라는 것은 해당 ref 가 지정됐다는 뜻이다(GetValueOrDefault 는 그 실제 값).
         if (source is not null && !await waiter.WaitForReady(source))
-            return NotReadyError(message.Id, request.SourceRef.GetValueOrDefault(), request.Timeout);
+            return NotReadyError(message.Id, request.SourceRef.GetValueOrDefault(), request.Timeout, waiter);
         if (target is not null && !await waiter.WaitForReady(target))
-            return NotReadyError(message.Id, request.TargetRef.GetValueOrDefault(), request.Timeout);
+            return NotReadyError(message.Id, request.TargetRef.GetValueOrDefault(), request.Timeout, waiter);
 
         // 좌표가 덜 지정된 드래그는 예외 대신 여기서 오류로 돌려준다(결함 2): 좌표 계산은 UI 스레드 안에서
         // 일어나므로 그 안에서 던지면 대상 앱을 죽일 수 있다. 아래 검사는 ResolveStartPoint/ResolveEndPoint 의
@@ -1177,32 +1237,229 @@ public sealed class IpcServer
                 $"Unknown screenshot mode \"{mode}\". Use \"{ScreenshotModes.Render}\" to redraw the visual " +
                 $"tree, or \"{ScreenshotModes.Screen}\" to read what is on the desktop.");
 
-        var response = await Application.Current.Dispatcher.InvokeAsync(() => isScreen
-            ? CaptureFromScreen(target, request.MaxWidth)
-            : CaptureByRendering(target, request.MaxWidth));
+        // annotate 는 캡처 대상의 DIP 좌표계에 상자를 겹쳐 그리는 방식이라 렌더 경로에서만 정확하다.
+        // 화면 픽셀을 읽는 경로는 WPF 좌표계와 잇는 변환을 손으로 해야 하고, 그쪽이 필요한 대상(컨텍스트 메뉴,
+        // 드롭다운)은 각자 최상위 창이라 find 와 snapshot 이 이미 보여 준다.
+        if (request.Annotate && isScreen)
+            return IpcSerializer.CreateError(message.Id,
+                $"annotate works with mode=\"{ScreenshotModes.Render}\" only. Popups and menus live in their own " +
+                "top-level windows, so xapper_find and xapper_snapshot already list them.");
+
+        var response = await Application.Current.Dispatcher.InvokeAsync(() =>
+        {
+            var captured = isScreen
+                ? CaptureFromScreen(target, request.MaxWidth)
+                : CaptureByRendering(target, request.MaxWidth, request.Annotate);
+
+            // 그림과 같은 걸음에 지문을 담는다. 부르는 쪽이 화면 기록을 따로 조회하지 않아도 이 화면을
+            // 이미 배워 두었는지 알 수 있고, 지문과 픽셀이 같은 순간의 것이라는 점도 보장된다.
+            if (Application.Current.MainWindow is { } main)
+                captured.Signature = VisualTree.ScreenSignature.Of(main);
+
+            return captured;
+        });
 
         return IpcSerializer.CreateResponse(message.Id, response);
     }
 
     /// <summary>
-    /// 시각 트리를 다시 그려 캡처합니다. 다른 창이 열려 있으면 이 그림에 담기지 않았다는 사실을 함께 알립니다.
+    /// 현재 화면의 지문과, 요청하면 조작할 수 있는 영역 목록을 돌려줍니다.
+    /// 지문은 주 창만으로 낸다 — 팝업과 메뉴는 각자 최상위 창이라 섞이면 같은 화면이 여러 지문으로 갈라진다.
     /// </summary>
-    private static ScreenshotResponse CaptureByRendering(UIElement? element, int? maxWidth)
+    private async Task<IpcMessage> HandleScreenProfile(IpcMessage message)
+    {
+        var request = message.Payload is { } payload
+            ? IpcSerializer.DeserializePayload<ScreenProfileRequest>(payload)
+            : new ScreenProfileRequest();
+
+        var response = await Application.Current.Dispatcher.InvokeAsync(() =>
+        {
+            var window = Application.Current.MainWindow;
+            if (window is null)
+                return null;
+
+            var profile = new ScreenProfileResponse
+            {
+                Signature = VisualTree.ScreenSignature.Of(window),
+                ElementCount = VisualTree.ScreenSignature.CountOf(window)
+            };
+
+            if (!request.IncludeRegions)
+                return profile;
+
+            // 셀렉터로 지목되는 요소가 기록의 본체다. 트리를 그대로 훑어 모으며, 히트테스트를 거치지 않는다.
+            foreach (var element in Capture.ScreenRegionPicker.Pick(window, MaxScreenRegions))
+                profile.Regions.Add(DescribeRegion(element, profile.Regions.Count + 1, null));
+
+            if (request.AddressableOnly)
+                return profile;
+
+            // 이름이 없어 셀렉터로 잡히지 않는 요소는 기준점과 상대 좌표로만 남길 수 있다. 그런 요소를
+            // 가려내려면 "클릭이 닿는가" 를 따져야 하므로 여기서만 annotate 와 같은 고르기를 쓴다.
+            var bounds = System.Windows.Media.VisualTreeHelper.GetDescendantBounds(window);
+            var anchored = Capture.MarkPicker.Pick(
+                    window, bounds, MaxScreenshotMarks, MinScreenshotMarkSize, out _)
+                .Where(candidate => candidate.Anchor is not null)
+                .Take(MaxAnchoredScreenRegions);
+
+            foreach (var candidate in anchored)
+                profile.Regions.Add(DescribeRegion(candidate.Element, profile.Regions.Count + 1, candidate));
+
+            return profile;
+        });
+
+        if (response is null)
+            return IpcSerializer.CreateError(message.Id,
+                "The app has no main window yet, so there is no screen to fingerprint.");
+
+        return IpcSerializer.CreateResponse(message.Id, response);
+    }
+
+    /// <summary>
+    /// 앱에서 최근에 일어난 이벤트를 돌려줍니다.
+    /// 시각 트리가 답하지 못하는 물음이 있어서 낸 통로다. 고성능 그리드는 셀을 요소로 만들지 않으므로
+    /// "행을 눌렀는데 눌렸는가" 를 트리에서는 확인할 수 없지만, 요소가 없어도 이벤트는 난다.
+    /// </summary>
+    private async Task<IpcMessage> HandleEvents(IpcMessage message)
+    {
+        var request = message.Payload is { } payload
+            ? IpcSerializer.DeserializePayload<EventsRequest>(payload)
+            : new EventsRequest();
+
+        // 물어볼 때마다 다시 훑는다. 방금 뜬 대화상자의 이벤트는 조금 전까지 존재하지도 않았다.
+        await EnsureWatchingAsync();
+
+        var now = Environment.TickCount64;
+        var response = new EventsResponse { Stored = Events.EventWatcher.Log.Count };
+
+        foreach (var entry in Events.EventWatcher.Log.Recent(request.Count, request.Filter))
+        {
+            response.Events.Add(new EventEntry
+            {
+                Name = entry.Name,
+                SourceType = entry.SourceType,
+                SourceName = entry.SourceName,
+                Detail = entry.Detail,
+                AgoMs = Math.Max(0, now - entry.At)
+            });
+        }
+
+        return IpcSerializer.CreateResponse(message.Id, response);
+    }
+
+    /// <summary>
+    /// 이벤트 엿보기를 아직 걸지 않았으면 겁니다. 클래스 핸들러는 UI 스레드에서만 걸 수 있다.
+    /// 앱이 뜨자마자 걸지 않는 이유는, 주입되는 시점에 아직 Application 이 없을 수 있기 때문이다.
+    /// </summary>
+    private static async Task EnsureWatchingAsync()
+    {
+        if (Application.Current is null)
+            return;
+
+        await Application.Current.Dispatcher.InvokeAsync(() => Events.EventWatcher.EnsureRegistered());
+    }
+
+    /// <summary>
+    /// 요소 하나를 화면 기록에 담을 모양으로 옮깁니다.
+    /// ref 를 함께 발급하는 이유는, 기록을 조회한 직후 그대로 조작해 볼 수 있게 하기 위해서다.
+    /// </summary>
+    /// <param name="element">기록에 담을 요소.</param>
+    /// <param name="number">기록 안에서의 일련번호. 1부터 센다.</param>
+    /// <param name="anchored">기준점으로만 지목되는 요소라면 그 후보. 셀렉터가 있는 요소는 null.</param>
+    private ScreenMark DescribeRegion(UIElement element, int number, Capture.MarkCandidate? anchored)
+    {
+        return new ScreenMark
+        {
+            Number = number,
+            Ref = _refRegistry.Register(element),
+            Type = element.GetType().Name,
+            Name = (element as FrameworkElement)?.Name is { Length: > 0 } name ? name : null,
+            AutomationId = System.Windows.Automation.AutomationProperties.GetAutomationId(element),
+            Text = VisualTree.ElementText.Of(element),
+            Anchor = anchored?.Anchor,
+            AnchorX = anchored?.AnchorX,
+            AnchorY = anchored?.AnchorY,
+            // 판단 기준은 ScreenRegionPicker.IsChrome 과 같다. 템플릿 부모가 컨트롤이면 그 컨트롤의 내부 구조다.
+            FromTemplate = (element as FrameworkElement)?.TemplatedParent is System.Windows.Controls.Control
+        };
+    }
+
+    /// <summary>
+    /// 시각 트리를 다시 그려 캡처합니다. 다른 창이 열려 있으면 이 그림에 담기지 않았다는 사실을 함께 알립니다.
+    /// annotate 를 켜면 히트테스트로 닿을 수 있는 요소에 번호 상자를 그리고, 번호마다 ref 를 발급한다.
+    /// </summary>
+    /// <param name="element">캡처할 요소. null 이면 주 창 전체를 찍는다.</param>
+    /// <param name="maxWidth">인코딩할 최대 가로 픽셀 수. null 이면 축소하지 않는다.</param>
+    /// <param name="annotate">true 면 번호 상자를 그리고 번호마다 ref 를 발급한다.</param>
+    private ScreenshotResponse CaptureByRendering(UIElement? element, int? maxWidth, bool annotate)
+    {
+        var captured = element ?? Application.Current.MainWindow;
+        if (captured is null || !annotate)
+            return CaptureWithoutMarks(element, maxWidth);
+
+        var bounds = System.Windows.Media.VisualTreeHelper.GetDescendantBounds(captured);
+        var candidates = Capture.MarkPicker.Pick(
+            captured, bounds, MaxScreenshotMarks, MinScreenshotMarkSize, out var omitted);
+
+        var response = element is null
+            ? RenderCapture.CaptureWindow(maxWidth: maxWidth, marks: candidates)
+            : RenderCapture.CaptureElement(element, maxWidth, candidates);
+
+        WarnAboutWindowsNotInTheImage(response);
+        response.MarksOmitted = omitted;
+        foreach (var candidate in candidates)
+        {
+            response.Marks.Add(new ScreenMark
+            {
+                Number = candidate.Number,
+                Ref = _refRegistry.Register(candidate.Element),
+                Type = candidate.Element.GetType().Name,
+                Name = (candidate.Element as FrameworkElement)?.Name is { Length: > 0 } name ? name : null,
+                AutomationId = System.Windows.Automation.AutomationProperties.GetAutomationId(candidate.Element),
+                Text = VisualTree.ElementText.Of(candidate.Element),
+                Anchor = candidate.Anchor,
+                AnchorX = candidate.AnchorX,
+                AnchorY = candidate.AnchorY,
+                FromTemplate = (candidate.Element as FrameworkElement)?.TemplatedParent is not null
+            });
+        }
+
+        return response;
+    }
+
+    /// <summary>
+    /// 번호 상자 없이 시각 트리를 다시 그려 캡처합니다.
+    /// 다른 창이 열려 있으면 이 그림에 담기지 않았다는 사실을 함께 알립니다.
+    /// </summary>
+    /// <param name="element">캡처할 요소. null 이면 주 창 전체를 찍는다.</param>
+    /// <param name="maxWidth">인코딩할 최대 가로 픽셀 수. null 이면 축소하지 않는다.</param>
+    private static ScreenshotResponse CaptureWithoutMarks(UIElement? element, int? maxWidth)
     {
         var response = element is not null
             ? RenderCapture.CaptureElement(element, maxWidth)
             : RenderCapture.CaptureWindow(maxWidth: maxWidth);
 
-        // 렌더 방식은 시각 트리 하나만 그린다. 별도 창은 물론이고 팝업·메뉴·드롭다운도 자기 HWND에 살아 담기지 않는다.
-        // 그래서 Window 목록이 아니라 최상위 창 개수로 센다 — 팝업은 Window가 아니라서 그 목록에 나타나지 않는다.
+        WarnAboutWindowsNotInTheImage(response);
+        return response;
+    }
+
+    /// <summary>
+    /// 렌더 방식이 담지 못한 창이 있으면 그 사실을 응답에 적습니다.
+    /// 렌더 방식은 시각 트리 하나만 그린다. 별도 창은 물론이고 팝업·메뉴·드롭다운도 자기 HWND에 살아 담기지 않는다.
+    /// 그래서 Window 목록이 아니라 최상위 창 개수로 센다 — 팝업은 Window가 아니라서 그 목록에 나타나지 않는다.
+    ///
+    /// annotate 경로에서도 반드시 붙여야 한다. 번호 상자는 그린 시각 트리만 히트테스트하므로, 모달 대화상자에
+    /// 가려진 요소에도 상자와 ref 가 달린다. 이 경고가 없으면 호출자는 그림이 화면 전부라고 믿고 닿지 않는 것을 누른다.
+    /// </summary>
+    private static void WarnAboutWindowsNotInTheImage(ScreenshotResponse response)
+    {
         var otherWindows = DesktopCapture.CountVisibleWindows() - 1;
         if (otherWindows > 0)
             response.Warning =
                 $"{otherWindows} other window(s) are open and are not in this image. Popups, context menus and " +
                 $"drop-downs are never in it either. Use mode=\"{ScreenshotModes.Screen}\" to capture what is " +
-                "actually on the desktop.";
-
-        return response;
+                "actually on the desktop. Anything they cover is still marked here, because the marks come from " +
+                "this app's visual tree.";
     }
 
     /// <summary>

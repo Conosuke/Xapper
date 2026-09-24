@@ -14,12 +14,14 @@
   - [UI 트리 스냅샷](#2-ui-트리-스냅샷)
   - [요소 검색](#3-요소-검색)
   - [UI 자동 조작](#4-ui-자동-조작)
-  - [진단 및 검증](#5-진단-및-검증)
+  - [화면 기록](#5-화면-기록)
+  - [진단 및 검증](#6-진단-및-검증)
 - [설치 및 설정](#설치-및-설정)
   - [사전 요구사항](#사전-요구사항)
   - [빌드](#빌드)
   - [MCP 서버 연결 (Claude Desktop)](#mcp-서버-연결-claude-desktop)
   - [MCP 서버 연결 (Claude Code)](#mcp-서버-연결-claude-code)
+  - [에이전트 스킬 설치 (권장)](#에이전트-스킬-설치-권장)
   - [사용 예시](#사용-예시)
 
 </b>
@@ -97,12 +99,14 @@ src/
 ├── Xapper.Protocol        IPC 메시지 계약 (net6.0~9.0-windows, WPF 무의존)
 ├── Xapper.Injector        네이티브 인젝터 (P/Invoke로 DLL 주입)
 ├── Xapper.Inspector       인젝션 라이브러리 (net6.0~9.0-windows 멀티타겟)
-└── Xapper.McpServer       MCP 서버 (stdio transport, 24개 도구)
+└── Xapper.McpServer       MCP 서버 (stdio transport, 29개 도구)
 tests/
 ├── Xapper.TestApp         샘플 WPF 로그인 폼
 └── Xapper.Tests           단위 테스트 (xUnit)
 external/
 └── snoop-bin/             Snoop GenericInjector 네이티브 DLL
+skills/
+└── xapper/                에이전트 작업 절차 스킬 (Claude Code 쪽에 복사해 사용)
 ```
 
 Inspector와 GenericInjector DLL은 McpServer에 **임베디드 리소스로 내장**되어 있어 빌드된 실행 파일만으로 동작합니다. 별도의 경로 설정이나 환경변수 없이 바로 사용 가능합니다.
@@ -114,6 +118,7 @@ Inspector와 GenericInjector DLL은 McpServer에 **임베디드 리소스로 내
 ### **1. 프로세스 탐색 및 인젝션**
 - `xapper_list_processes` : 실행 중인 WPF 프로세스 목록 조회
 - `xapper_attach` : P/Invoke 네이티브 인젝션으로 대상 프로세스에 Inspector DLL 주입
+- `xapper_launch` : 앱을 직접 띄우면서 Inspector 를 함께 태운다. .NET 런타임의 startup hook(`DOTNET_STARTUP_HOOKS`)이 앱의 진입점보다 먼저 돌므로 주입 절차도, 그 뒤의 고정 2초 대기도 없어 attach 보다 빠르고(TestApp 실측 launch 0.9초 vs attach 2.1~2.8초), 주 창보다 먼저 뜨는 스플래시·로그인 창까지 사정권에 들어온다. 띄운 앱이 활성 세션이 되며 `xapper_detach` 는 연결만 끊는다(앱은 계속 실행). framework-dependent .NET 앱만 지원하므로 .NET Framework 앱은 직접 띄운 뒤 `xapper_attach` 를 사용한다. 두 가지 제약이 있다. 첫째, 환경변수는 대상 앱이 띄우는 자식 프로세스에도 상속되기 때문에, 앱보다 낮은 .NET 버전에서 도는 보조 실행 파일이 있다면 그 프로세스가 기동에 실패한다. 이런 앱에는 launch 대신 attach 를 사용한다. 둘째, 트리밍된 self-contained 빌드는 런타임이 startup hook 기능 자체를 제외하므로 훅이 조용히 로드되지 않고 제한 시간까지 기다린 뒤 실패한다
 - `xapper_detach` : Named Pipe 연결 해제 및 정리
 - Named Pipe 기반 IPC (4바이트 LE 길이 접두사 + UTF-8 JSON)
 - 응답을 끝까지 읽지 못한 연결은 이후 메시지 경계가 어긋나므로 폐기된다. 다음 호출은 재부착을 요구하는 오류를 낸다
@@ -123,7 +128,8 @@ Inspector와 GenericInjector DLL은 McpServer에 **임베디드 리소스로 내
 - 각 요소에 ref 번호 부여 (이후 조작에 사용)
 - maxDepth 파라미터로 탐색 깊이 제어
 - 다이얼로그는 물론 Popup·ContextMenu·드롭다운까지 열린 최상위 창을 모두 탐색
-- 순회할 수 없는 노드는 그 가지만 건너뛰고 순회를 계속하며, 건너뛴 개수를 헤더에 표시 (위치는 `format="json"`)
+- 순회할 수 없는 노드는 그 가지만 건너뛰고 순회를 계속하며, 건너뛴 개수와 사유별 요약을 헤더에 한 줄로 표시 (낱낱의 위치는 `format="json"`)
+- `addressableOnly` 를 켜면 id·name·text 중 아무것도 없는 레이아웃 컨테이너(Grid·Border·ContentPresenter 등)를 접고 그 아래의 지목 가능한 요소를 끌어올린다. 셀렉터로 지목할 수 있는 것만 남으므로 출력이 크게 짧아진다(TestApp 실측 86줄 → 51줄, 컨트롤이 많은 화면일수록 차이가 커진다). 이때는 `maxDepth` 를 평소보다 크게 준다 — 깊이 제한이 필터보다 먼저 걸리기 때문이다. 접힌 개수는 헤더에 한 줄로 알린다. 컨트롤 템플릿 내부(`PART_ContentHost` 같이 이름이 붙은 부품)는 이름이 있으므로 남는다
 - `rootRef`로 특정 요소부터 부분 탐색. 깊이를 올리면 응답이 지수로 커지므로 전체 깊이를 올리는 대신 부분 탐색을 쓴다
 - 스냅샷은 이전에 발급한 ref를 모두 무효화한다 (검색은 무효화하지 않음)
 - 최상위 창이 둘 이상이면 루트가 가상 `Application` 노드가 된다. 팝업·메뉴·툴팁도 각자 최상위 창이라 무엇이 떠 있느냐에 따라 루트 모양이 바뀐다
@@ -150,16 +156,26 @@ Inspector와 GenericInjector DLL은 McpServer에 **임베디드 리소스로 내
 - `xapper_type` : 텍스트 입력. 접근성 Value 패턴이나 `TextBox.Text` 로 값을 넣고, 둘 다 없는 편집기(RichTextBox·그리드 셀 편집기·DevExpress 편집기)에는 포커스를 준 뒤 실제 키 입력으로 타이핑한다. `ref` 를 생략하면 현재 키보드 포커스 요소에 키 입력으로 타이핑한다(F2·더블클릭으로 연 인라인 편집기처럼 스냅샷에 아직 없는 편집기). 글자 그대로 들어가며, 여러 글자는 항상 이 도구로(글자마다 `xapper_key` 를 부르지 않는다)
 - `xapper_key` : 대상 프로세스 안에서 키 입력(F2/Enter/Escape/Tab/화살표/한 글자, 또는 `"qwerty"` 같은 문자열을 한 호출에 글자별 키 입력으로). 전경 창과 무관하게 대상 앱의 키보드 포커스 요소로 라우팅하므로, 사용자가 앞 창에서 딴 일을 해도 키가 새지 않는다. ref 를 주면 먼저 그 요소에 포커스. 수식키(`modifiers`: Ctrl/Shift/Alt, `Ctrl+Shift` 조합)를 지원 — 대상 프로세스 안에서 GetKeyState 를 스푸프해 WPF 가 눌린 것으로 보게 하며(Ctrl+Z 등), 후크를 걸 수 없으면 오류로 안내한다. 편집기가 키(F2)로만 열리는 컨트롤에 쓴다
 - `xapper_notice_show` / `xapper_notice_hide` : 대상 앱 창 위쪽에 "Xapper 조작중" 알림을 올리고 내린다. 실제 마우스 입력(폴백)이 예상되는 구간 앞에 올려 책상 앞 사람이 마우스가 저절로 움직이는 것을 보고 놀라지 않게 한다. 알림 창은 MCP 서버 프로세스가 띄우며 포커스를 가져가지 않고 클릭이 통과한다(스냅샷·검색에도 안 잡힘). 알림이 내려간 채 조작이 실제 마우스로 떨어지면 서버가 자동으로 올리고 응답에 알린다. detach 하면 내려간다. 한계: `xapper_screenshot mode="screen"` 에는 알림이 찍힐 수 있다
+- `xapper_run` : 여러 조작을 담은 JavaScript 를 한 번에 실행한다. 반복·조건·대기·단언을 서버 안에서 처리해 도구를 하나씩 부를 때의 왕복을 없앤다. 전역 `xapper` 로 find/one/click/doubleClick/rightClick/wheel/drag/type/key/select/toggle/expand/scroll/get/assert/waitUntil/screenshot/snapshot/notice 를, `log`/`fail`/`sleep` 도 쓴다. 대상은 셀렉터 문자열(`id=`/`name=`/`text=`/`type=`, 콤마 AND)·ref 숫자·find 결과 요소. 실패한 조작은 예외로 스크립트를 멈추고 응답에 실패 줄·짧은 추적·스크린샷 경로를 준다. 성공은 요약과 return 값만. 3개 이상 연속 조작이나 반복이 있으면 이걸 쓴다(예: `xapper.type("id=User","t"); xapper.click("text=로그인"); xapper.waitUntil("id=Main"); return xapper.get("id=Status","Text");`)
 - `xapper_select` : ComboBox/ListBox 항목 선택
 - `xapper_toggle` : CheckBox/ToggleButton 토글
 - `xapper_expand` : TreeViewItem/Expander 펼치기/접기
 - `xapper_scroll` : ScrollViewer 스크롤
 - `xapper_drag` : 드래그 (요소→요소 / 요소+픽셀 오프셋 / 절대 화면 좌표). **시작 지점**이 스플리터·슬라이더·스크롤바 썸이면 그 컨트롤의 드래그 이벤트로 처리해 커서도 포커스도 건드리지 않는다 (목록에 스크롤바가 있다고 항목 드래그가 스크롤로 바뀌지 않는다). 그 외(항목 드롭·캔버스 요소 이동)도 기본은 대상 프로세스 안에서 몰아 커서·포커스를 건드리지 않으며, 그 경로를 설치할 수 없거나 같은 앱의 창이 시작 지점을 덮고 있을 때만 실제 마우스 입력으로 폴백한다(응답에 어느 경로였는지 표시)
 
-### **5. 진단 및 검증**
+### **5. 화면 기록**
+- `xapper_screen_recall` / `xapper_screen_learn` / `xapper_screen_forget` : 한 번 파악한 화면을 다시 파악하지 않게 한다. 화면에 들어서면 먼저 `recall` 하고, 아는 화면이면 셀렉터와 기준점 목록을 받아 **스크린샷 없이** 조작한다. 모르는 화면이면 그때만 `annotate` 스크린샷으로 한 번 보고 `learn` 해 둔다
+- 화면을 식별하는 지문은 **주 창의 시각 트리에서 뽑은 (타입, Name, AutomationId) 세 값의 중복 없는 집합**이다. 세 가지 선택이 각각 실측으로 정해졌다. **텍스트를 넣지 않아서** 그리드 데이터나 선택 상태가 바뀌어도 같은 화면으로 인식하고, **개수가 아니라 집합으로 세서** 가상화 목록을 스크롤해도 흔들리지 않으며(노드가 105개에서 149개로 늘어도 고유 요소는 46개 그대로), **주 창으로 한정해서** 팝업과 메뉴를 배제한다. 마지막 것이 특히 중요한데, WPF 는 한 번 연 컨텍스트 메뉴를 닫아도 시각 트리에서 없애지 않아 전체 트리로 재면 같은 화면이 여러 지문으로 갈라진다(실측: 전체 트리 4종류 → 주 창만 2종류)
+- `learn` 은 **이름과 메모만 받는다.** 영역 목록은 서버가 직접 뽑는다. 영역이 어디에 몇 개 있는지는 기계가 정확히 알고, 이 화면이 무슨 화면인지와 주의할 점은 모델만 판단할 수 있기 때문이다
+- 기록하는 영역은 **id·name 으로 잡히는 것과 기준점이 붙은 것**뿐이다. 텍스트로만 잡히는 것(데이터 행)과 컨트롤 템플릿이 만든 부품은 뺀다. 전자는 데이터가 바뀌면 가리키는 것이 없어지고 필요하면 `xapper_find` 로 즉시 찾을 수 있으며, 후자는 스크롤바 내부 같은 것이라 기록해 둘 값어치가 없다
+- 저장소는 `%LOCALAPPDATA%\Xapper\screens.db` 의 SQLite 파일 하나다. JSON 대신 DB 를 쓰는 이유는 MCP 클라이언트가 서버 프로세스를 수시로 다시 띄우고 배포 때마다 죽였다 살리기 때문이다. 파일 하나를 두 프로세스가 동시에 쓰면 깨지고, 쓰는 도중에 죽으면 절반만 적힌 파일이 남는다
+- **날짜에 따른 자동 삭제는 없다.** 여기서는 오래된 것과 틀린 것이 같지 않다. 앱이 바뀌면 지문도 바뀌므로 낡은 기록은 틀린 답을 주는 대신 조회에 걸리지 않고 묻힌다. 같은 지문으로 다시 배우면 덮어쓰고, 조회할 때마다 사용 횟수가 쌓이며, 앱을 새로 빌드해 기록이 쓸모없어졌을 때는 `forget` 으로 비운다. 앱당 200개 상한은 안전망일 뿐이다
+
+### **6. 진단 및 검증**
 - `xapper_get_property` : 임의 DependencyProperty 값 읽기
 - `xapper_get_bindings` : 데이터 바인딩 상태 및 오류 조회
 - `xapper_screenshot` : 윈도우/요소 캡처. 그림을 MCP 이미지 콘텐츠로 그대로 반환하므로 호출자가 화면을 직접 볼 수 있다
+- `annotate` 를 켜면 히트테스트로 닿을 수 있는 요소에 번호 상자를 그리고, 번호마다 ref 를 적은 목록을 그림과 함께 돌려준다. 이름도 id 도 텍스트도 없는 컨트롤(DevExpress 그리드 셀 등)을 지목할 때 스크린샷과 `xapper_element_at` 을 번갈아 부르던 왕복이 한 번으로 줄어든다. 상자를 받는 것은 다른 후보를 품지 않은 가장 안쪽 요소뿐이며(컨테이너와 컨트롤 템플릿 부품은 제외), 번호 라벨은 요소 바깥 왼쪽에 얹어 화면의 글자를 가리지 않는다. 셀렉터로 지목할 수 없는 요소에는 기준점을 함께 적는다(`in id=GridControl at 0.45,0.2` 형태). ref 는 이번 세션에서만 유효하지만 기준점은 창 크기가 바뀌어도, 세션을 넘겨도 유효하므로 기록해 둘 값은 이쪽이다. 기준점은 유일한 id·name 을 가진 가장 가까운 조상으로 잡으며, 그런 조상이 없으면 붙지 않는다. 상자가 상한을 넘으면 면적이 작은 것을 남기고 잘라낸 개수를 알린다. `mode="render"` 에서만 동작하는데, 상자를 캡처 대상의 좌표계에 겹쳐 그리는 방식이라 화면 픽셀을 읽는 경로에서는 정확도를 보장할 수 없고, 그쪽이 필요한 팝업·메뉴는 각자 최상위 창이라 `xapper_find` 가 이미 보여 주기 때문이다
 - `maxWidth`로 비율을 유지한 채 축소, `savePath`로 PNG를 파일에 함께 저장 (저장 실패는 경고로 알리고 그림은 그대로 반환)
 - 보고되는 크기는 실제 인코딩된 픽셀 수
 - `mode`로 캡처 출처를 고른다. `render`(기본)는 앱의 시각 트리를 다시 그려 창이 가려져 있어도 찍히지만 별도 창·팝업·컨텍스트 메뉴·드롭다운은 담기지 않는다. `screen`은 데스크톱에 합성된 픽셀을 읽어 사람이 보는 그대로 담기지만 위를 덮은 창도 함께 찍힌다
@@ -245,6 +261,20 @@ src/Xapper.McpServer/bin/Debug/net9.0-windows/Xapper.McpServer.exe
 | `XAPPER_INSPECTOR_BASE_DIR` | Inspector DLL 기본 디렉토리 오버라이드 (TFM별 하위 폴더 포함) |
 | `XAPPER_GENERIC_INJECTOR_DIR` | GenericInjector DLL 디렉토리 오버라이드 |
 
+### **에이전트 스킬 설치 (권장)**
+
+`skills/xapper` 를 Claude Code 쪽으로 복사하면, 에이전트가 작업을 시작하는 시점에 Xapper 사용 절차를 먼저 읽습니다. 서버 지침과 도구 설명이 닿지 못하는 자리를 메우는 것이라 실제 토큰 사용량 차이가 큽니다. 특히 화면을 한 번 배워 두고 다음 방문에 다시 쓰는 흐름이 여기에 담겨 있습니다.
+
+```bash
+# 여러 프로젝트에서 쓸 때
+cp -r skills/xapper ~/.claude/skills/
+
+# 한 프로젝트에서만 쓸 때
+cp -r skills/xapper <프로젝트>/.claude/skills/
+```
+
+자세한 내용은 [`skills/README.md`](skills/README.md) 를 참고하십시오.
+
 ### **사용 예시**
 
 MCP 연결 후, AI 에이전트에게 자연어로 요청합니다:
@@ -296,6 +326,7 @@ AI 에이전트가 자동으로 수행하는 흐름:
 | `xapper_batch` | 여러 단계를 한 호출에 (첫 실패에서 중단, 단계별 결과) | `steps` (`{"tool", ...}` 배열, 최대 50) |
 
 <br/>
+
 
 ## **동작 원리**
 
