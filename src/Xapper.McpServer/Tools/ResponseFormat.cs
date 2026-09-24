@@ -10,13 +10,6 @@ namespace Xapper.McpServer.Tools;
 /// </summary>
 internal static class ResponseFormat
 {
-    #region Fields
-
-    /// <summary>검색 결과에 나열할 건너뛴 노드의 최대 개수.</summary>
-    private const int MaxReportedSkippedNodes = 10;
-
-    #endregion
-
     #region Public Methods
 
     /// <summary>
@@ -93,8 +86,11 @@ internal static class ResponseFormat
     #region Private Methods
 
     /// <summary>
-    /// 순회하지 못해 건너뛴 노드를 결과 끝에 덧붙입니다.
-    /// 검색이 트리 전체를 보지 못했다는 사실과 어디서 막혔는지를 호출자가 알 수 있게 한다.
+    /// 순회하지 못해 건너뛴 노드를 결과 끝에 한 줄로 덧붙입니다.
+    /// 검색이 트리 전체를 보지 못했다는 사실만 알리면 충분하다 — 사유는 대개 하나로 같고, 하나하나 나열하면
+    /// 호출자가 읽을 것이 없는 줄만 늘어난다. 어디서 막혔는지 낱낱이 보려면 스냅샷의 json 출력을 쓴다.
+    /// 그때 깊이를 함께 일러 준다: 검색은 깊이 제한 없이 훑지만 스냅샷은 기본 5에서 멈추므로, 요약에 적힌 깊이를
+    /// 넘겨 주지 않으면 같은 노드에 닿지 못해 목록이 비어 나온다.
     /// </summary>
     private static void AppendSkippedNodes(StringBuilder sb, List<string> skippedNodes)
     {
@@ -102,13 +98,9 @@ internal static class ResponseFormat
             return;
 
         sb.AppendLine();
-        sb.AppendLine($"WARNING: skipped {skippedNodes.Count} unreadable node(s). The subtree under each was not searched:");
-        foreach (var node in skippedNodes.Take(MaxReportedSkippedNodes))
-            sb.AppendLine($"  {node}");
-
-        var remaining = skippedNodes.Count - MaxReportedSkippedNodes;
-        if (remaining > 0)
-            sb.AppendLine($"  ... and {remaining} more");
+        sb.AppendLine($"WARNING: skipped {skippedNodes.Count} node(s); their subtrees were not searched. " +
+                      $"{SkippedNodeSummary.Summarize(skippedNodes)}. " +
+                      "To see each one, run xapper_snapshot with format=\"json\" and a maxDepth past the depth above.");
     }
 
     #endregion

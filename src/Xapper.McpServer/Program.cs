@@ -36,9 +36,33 @@ else
     genericInjectorDir = envInjectorDir ?? extractor.GenericInjectorDir;
 }
 
-// 서버 전체에 걸친 사용 지침. MCP 규격이 초기화 때 한 번 전달하는 자리로, 도구 설명에 같은 문장을
-// 반복하지 않도록 여기에만 둔다.
+// 서버 전체에 걸친 사용 지침. MCP 규격이 초기화 때 한 번 전달하는 자리다.
+//
+// 안내가 놓이는 자리가 셋이고 각각 읽히는 시점이 다르므로, 무엇을 어디에 둘지 기준을 정해 두었다.
+// 이 지침은 늘 전달되지만 쓰는 순간에서 가장 멀어 잘 잊히므로 전체 흐름과 도구 사이의 관계만 담는다.
+// 도구 하나를 어떻게 쓰고 그 응답을 어떻게 읽는지는 그 도구의 설명이 맡는다. 부르는 순간에 함께 읽히고,
+// 그 도구를 쓰면서 그 설명을 못 볼 수는 없기 때문이다. 작업 전체의 절차는 skills/xapper 가 맡는다.
+// 가장 강하지만 불려야만 읽히므로, 그것이 없어도 되도록 앞의 둘이 스스로 서 있어야 한다.
 var serverInstructions = """
+    Load these tools together before you start, not one at a time: xapper_screen_recall, xapper_screen_learn,
+    xapper_screen_note, xapper_run, xapper_launch, xapper_find, xapper_snapshot, xapper_click, xapper_type,
+    xapper_key, xapper_get_property, xapper_assert, xapper_element_at, xapper_events, xapper_screenshot. The first three are the ones agents forget, and they
+    are the ones that cut the most work: recall replaces a screenshot on a screen you have seen before, run
+    replaces a whole chain of calls, and launch replaces attaching.
+
+    When you need to know whether an action landed, xapper_events reads what the app itself raised - a click on a
+    grid row shows up as the selection changing, typing as the text changing, a button that did nothing as
+    nothing at all. It reaches where the visual tree does not: a grid that paints its own cells has no element
+    to inspect but still raises events.
+
+    Three habits waste far more than anything else. Do not screenshot to check whether an action worked - the
+    action's own response already says what happened, and xapper_get_property or xapper_assert confirms a value
+    for a fraction of the tokens an image costs. Do not screenshot to find a control - xapper_find and target
+    selectors do that live, and when a control has no id, name or text, one xapper_screenshot with
+    annotate: true hands you a ref for every clickable thing at once. Do not screenshot to read what a panel or
+    a grid holds - xapper_snapshot with rootRef returns that same content as text. A picture is the right answer
+    only when you need to see how something is drawn: layout, rendering, a chart, a control that paints itself.
+
     Xapper drives a WPF application by injecting into its process and walking the real visual tree, not the
     UI Automation tree. Seeing and acting are not equally unconstrained, and the difference matters:
 
@@ -69,9 +93,23 @@ var serverInstructions = """
     keeps their hands off, and xapper_notice_hide when that stretch of work is over. If an action drives the real
     mouse while the banner is down, the server raises it for you and says so in the response; you still hide it.
 
+    For any stretch of three or more actions, or anything with a loop, a condition, or a wait, send one
+    xapper_run script instead of calling tools one at a time - it runs entirely in the app and returns only a
+    summary. Explore first with find/snapshot, then drive with a script. Prefer id/name selectors and waitUntil
+    over sleep, so the same script can be re-run.
+
+    Screens are worth remembering, and the three screen tools carry the rules for doing it - what a record
+    holds, how to read one, what belongs in a note. Keep to the rhythm: call xapper_screen_recall every time
+    the screen changes rather than once at the start; look at an unknown screen once and xapper_screen_learn
+    it; and put what acting teaches you on the record with xapper_screen_note before you move on. Most of what
+    is worth remembering is found by acting, not by arriving.
+
     Attach first: xapper_list_processes, then xapper_attach. Attaching again to a process you are already
     attached to is rejected, but the rejection surfaces only after the injection attempt, as a connect
     failure - so detach before re-attaching rather than retrying.
+    When you can start the app yourself, xapper_launch is better than attaching: it loads the inspector before
+    the app's entry point, so there is no injection step and screens that appear before the main window -
+    splash, login - are reachable too.
 
     Element refs come from xapper_snapshot and xapper_find. Only xapper_snapshot resets them, and it does
     more than invalidate: it also restarts numbering from 1, so a ref you obtained before a snapshot may
@@ -88,6 +126,11 @@ var serverInstructions = """
 builder.Services.AddSingleton<SessionManager>();
 builder.Services.AddSingleton<IOperatorNotice, OperatorNotice>();
 builder.Services.AddSingleton(new WpfProcessInjector(inspectorBaseDir, genericInjectorDir));
+
+// 화면 기록은 서버가 다시 뜨더라도 남아야 하므로 사용자 로컬 앱 데이터 폴더의 파일 하나에 담는다.
+builder.Services.AddSingleton<ScreenTracker>();
+builder.Services.AddSingleton(new ScreenStore(Path.Combine(
+    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Xapper", "screens.db")));
 
 builder.Services.AddMcpServer(options =>
 {
@@ -107,7 +150,10 @@ builder.Services.AddMcpServer(options =>
 .WithTools<CaptureTools>()
 .WithTools<FindTools>()
 .WithTools<BatchTools>()
-.WithTools<NoticeTools>();
+.WithTools<NoticeTools>()
+.WithTools<RunTools>()
+.WithTools<ScreenTools>()
+.WithTools<EventTools>();
 
 var app = builder.Build();
 await app.RunAsync();

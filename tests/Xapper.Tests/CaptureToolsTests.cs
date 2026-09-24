@@ -1,5 +1,6 @@
 using ModelContextProtocol.Protocol;
 using Xapper.McpServer;
+using Xapper.McpServer.Infrastructure;
 using Xapper.McpServer.Tools;
 using Xapper.Protocol;
 using Xapper.Protocol.Messages.Responses;
@@ -10,9 +11,20 @@ namespace Xapper.Tests;
 /// 스크린샷 도구가 그림을 온전히 돌려주는지 검증하는 테스트 클래스.
 /// 이전에는 base64 앞 100자만 붙이고 잘라 버려 호출자가 화면을 볼 방법이 없었다.
 /// </summary>
-public class CaptureToolsTests
+public class CaptureToolsTests : IDisposable
 {
     #region Helpers
+
+    /// <summary>테스트마다 제 몫의 빈 저장소를 쓴다. 기록이 섞이면 그림 대신 기록이 나가는 길로 빠진다.</summary>
+    private readonly string _storePath =
+        Path.Combine(Path.GetTempPath(), $"xapper-capture-{Guid.NewGuid():N}.db");
+
+    private ScreenStore NewStore() => new(_storePath);
+
+    public void Dispose()
+    {
+        try { File.Delete(_storePath); } catch (IOException) { }
+    }
 
     /// <summary>PNG 자리에 쓸 임의의 바이트. 도구는 내용을 해석하지 않고 그대로 전달한다.</summary>
     private static readonly byte[] PngBytes = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x01, 0x02, 0x03];
@@ -30,7 +42,141 @@ public class CaptureToolsTests
         await pipe.WriteAsync(IpcSerializer.Serialize(IpcSerializer.CreateResponse(request!.Id, payload)));
     });
 
+    /// <summary>지문을 실은 스크린샷 응답을 돌려주는 가짜 Inspector를 띄웁니다.</summary>
+    private static Task RespondWithScreenshot(System.IO.Pipes.NamedPipeServerStream pipe, string signature) =>
+        Task.Run(async () =>
+        {
+            var request = await IpcSerializer.DeserializeAsync(pipe);
+            var payload = new ScreenshotResponse
+            {
+                Base64Png = Convert.ToBase64String(PngBytes),
+                Width = 320,
+                Height = 240,
+                Signature = signature
+            };
+            await pipe.WriteAsync(IpcSerializer.Serialize(IpcSerializer.CreateResponse(request!.Id, payload)));
+        });
+
+    /// <summary>셀렉터를 가진 영역이 있는, 쓸 만한 기록 하나를 저장소에 넣습니다.</summary>
+    private void LearnScreen(string signature)
+    {
+        using var store = NewStore();
+        store.Save(new ScreenRecord
+        {
+            Signature = signature,
+            App = "DemoApp",
+            Name = "로그인 화면",
+            Regions = [new ScreenRegion { Type = "Button", Selector = "id=Save" }]
+        });
+    }
+
     #endregion
+
+    [Fact]
+    public async Task Screenshot_WithAnnotate_ReturnsTheRecordInsteadOfAnImage_OnALearnedScreen()
+    {
+        // annotate 가 주려는 것은 "눌러 쓸 수 있는 목록" 이고, 배워 둔 기록이 바로 그 목록이다.
+        // 같은 것을 그림으로 한 번 더 받으면 토큰만 나간다.
+        const string signature = "sig-known";
+        LearnScreen(signature);
+
+        var processId = FakeInspector.NextProcessId();
+        await using var fakeInspector = FakeInspector.Create(processId);
+        await using var sessions = new SessionManager();
+        var accepting = fakeInspector.WaitForConnectionAsync();
+        await sessions.AttachAsync(processId);
+        await accepting;
+
+        var responding = RespondWithScreenshot(fakeInspector, signature);
+        var blocks = (await new CaptureTools(sessions, NewStore(), new ScreenTracker()).Screenshot(annotate: true)).ToList();
+        await responding;
+
+        var only = Assert.IsType<TextContentBlock>(Assert.Single(blocks));
+        Assert.Contains("id=Save", only.Text);
+        Assert.Contains("without annotate", only.Text);
+        Assert.DoesNotContain(blocks, block => block is ImageContentBlock);
+    }
+
+    [Fact]
+    public async Task Screenshot_TellsTheCallerWhenTheScreenIsNotInTheRecordYet()
+    {
+        // 그림을 받아 드는 순간이 배우기에 가장 좋은 시점이므로, 그 사실을 그림에 딸려 보낸다.
+        var processId = FakeInspector.NextProcessId();
+        await using var fakeInspector = FakeInspector.Create(processId);
+        await using var sessions = new SessionManager();
+        var accepting = fakeInspector.WaitForConnectionAsync();
+        await sessions.AttachAsync(processId);
+        await accepting;
+
+        var responding = RespondWithScreenshot(fakeInspector, "sig-unknown");
+        var blocks = (await new CaptureTools(sessions, NewStore(), new ScreenTracker()).Screenshot()).ToList();
+        await responding;
+
+        var summary = Assert.IsType<TextContentBlock>(blocks[0]);
+        Assert.Contains("xapper_screen_learn", summary.Text);
+        Assert.Contains(blocks, block => block is ImageContentBlock);
+    }
+
+    [Fact]
+    public async Task Screenshot_DoesNotAskToRelearn_WhenTheScreenAlreadyHasARecord()
+    {
+        // 영역이 낡았으면 다음 조회가 알아서 다시 뽑는다. 여기서 다시 배우라고 권하면 서버가 이미 맡은 일을
+        // 모델에게 또 시키는 꼴이고, 두 통로가 같은 상태를 두고 다른 말을 하게 된다.
+        const string signature = "sig-thin";
+        using (var store = NewStore())
+        {
+            store.Save(new ScreenRecord
+            {
+                Signature = signature,
+                App = "DemoApp",
+                Name = "설정 화면",
+                Regions = [new ScreenRegion { Type = "Grid", Anchor = "name=Root", AnchorX = 0.5, AnchorY = 0.5 }]
+            });
+        }
+
+        var processId = FakeInspector.NextProcessId();
+        await using var fakeInspector = FakeInspector.Create(processId);
+        await using var sessions = new SessionManager();
+        var accepting = fakeInspector.WaitForConnectionAsync();
+        await sessions.AttachAsync(processId);
+        await accepting;
+
+        var responding = RespondWithScreenshot(fakeInspector, signature);
+        var blocks = (await new CaptureTools(sessions, NewStore(), new ScreenTracker()).Screenshot()).ToList();
+        await responding;
+
+        var summary = Assert.IsType<TextContentBlock>(blocks[0]);
+        Assert.Contains("already learned", summary.Text);
+        Assert.DoesNotContain("xapper_screen_learn", summary.Text);
+    }
+
+    [Fact]
+    public async Task Screenshot_CountsTheShots_WhenNothingIsRecordedBetweenThem()
+    {
+        // 같은 화면을 거듭 찍으면서 아무것도 남기지 않는 것이 가장 흔한 낭비다. 몇 장째인지를 들이민다.
+        const string signature = "sig-repeat";
+        var tracker = new ScreenTracker();
+
+        var processId = FakeInspector.NextProcessId();
+        await using var fakeInspector = FakeInspector.Create(processId);
+        await using var sessions = new SessionManager();
+        var accepting = fakeInspector.WaitForConnectionAsync();
+        await sessions.AttachAsync(processId);
+        await accepting;
+
+        var first = RespondWithScreenshot(fakeInspector, signature);
+        var firstBlocks = (await new CaptureTools(sessions, NewStore(), tracker).Screenshot()).ToList();
+        await first;
+
+        var second = RespondWithScreenshot(fakeInspector, signature);
+        var secondBlocks = (await new CaptureTools(sessions, NewStore(), tracker).Screenshot()).ToList();
+        await second;
+
+        Assert.DoesNotContain("picture 2 of this screen",
+            Assert.IsType<TextContentBlock>(firstBlocks[0]).Text);
+        Assert.Contains("picture 2 of this screen",
+            Assert.IsType<TextContentBlock>(secondBlocks[0]).Text);
+    }
 
     [Fact]
     public async Task Screenshot_ReturnsTheWholeImage_NotATruncatedString()
@@ -44,7 +190,7 @@ public class CaptureToolsTests
         await accepting;
 
         var responding = RespondWithScreenshot(fakeInspector);
-        var blocks = (await new CaptureTools(sessions).Screenshot()).ToList();
+        var blocks = (await new CaptureTools(sessions, NewStore(), new ScreenTracker()).Screenshot()).ToList();
         await responding;
 
         var summary = Assert.IsType<TextContentBlock>(blocks[0]);
@@ -70,7 +216,7 @@ public class CaptureToolsTests
         try
         {
             var responding = RespondWithScreenshot(fakeInspector);
-            var blocks = (await new CaptureTools(sessions).Screenshot(savePath: savePath)).ToList();
+            var blocks = (await new CaptureTools(sessions, NewStore(), new ScreenTracker()).Screenshot(savePath: savePath)).ToList();
             await responding;
 
             var summary = Assert.IsType<TextContentBlock>(blocks[0]);
@@ -86,7 +232,7 @@ public class CaptureToolsTests
     [Fact]
     public async Task Screenshot_WithNonPositiveMaxWidth_SaysSoInsteadOfSilentlyIgnoringIt()
     {
-        var blocks = (await new CaptureTools(new SessionManager()).Screenshot(maxWidth: 0)).ToList();
+        var blocks = (await new CaptureTools(new SessionManager(), NewStore(), new ScreenTracker()).Screenshot(maxWidth: 0)).ToList();
 
         var only = Assert.IsType<TextContentBlock>(Assert.Single(blocks));
         Assert.Contains("maxWidth", only.Text);
