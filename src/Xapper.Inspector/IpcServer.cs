@@ -38,6 +38,12 @@ public sealed class IpcServer
     /// <summary>Application 이 생겼는지 다시 묻는 간격.</summary>
     private static readonly TimeSpan ApplicationWaitPoll = TimeSpan.FromMilliseconds(50);
 
+    /// <summary>
+    /// 정체된 드래그가 끌어놓기 루프에 갇혔는지 판단하기 전에 기다려 주는 시간.
+    /// 평범하게 느린 핸들러는 이 안에 끝나므로 취소하지 않는다. 루프는 이만큼 기다려도 끝나지 않는다.
+    /// </summary>
+    private const int DragLoopProbeMs = 500;
+
     /// <summary>annotate 스크린샷에 그릴 번호 상자의 최대 개수. 넘으면 면적이 작은 것을 남긴다.</summary>
     private const int MaxScreenshotMarks = 40;
 
@@ -210,6 +216,30 @@ public sealed class IpcServer
         if (application is null)
             return Task.FromResult(true);
         return SyntheticMouse.WaitUntilHandledAsync(application.Dispatcher, TimeSpan.FromMilliseconds(timeoutMs));
+    }
+
+    /// <summary>
+    /// 합성 드래그가 앱의 끌어놓기 루프를 열어 취소했을 때의 응답을 만듭니다.
+    /// 실패가 아니라 "이 드래그는 커서 없이 끝낼 수 없다" 는 사실을 알리는 것이 목적이다. 무엇도 떨어지지 않았다는 점과,
+    /// 다음에 같은 자리에서 헛걸음하지 않도록 기록에 남기라는 점을 함께 적는다.
+    /// </summary>
+    private static IpcMessage DragLoopCancelledResponse(string messageId, bool released)
+    {
+        var outcome = released
+            ? "Xapper cancelled it with Escape so the app does not stay frozen inside the loop; nothing was dropped."
+            : "Xapper tried to cancel it with Escape, but the app is still inside the loop. Until someone presses a " +
+              "key or moves the mouse over it, the app will not answer other actions.";
+
+        return IpcSerializer.CreateResponse(messageId, new ActionResponse
+        {
+            Success = false,
+            Message = "The drag started a drag-and-drop operation (the app called DragDrop.DoDragDrop). That loop only " +
+                      "notices input that arrives through the system input queue, and the drop position comes from the " +
+                      "real cursor, so a cursor-free drag can neither move it nor release it. " + outcome + " " +
+                      "If the drop itself is what you need, it has to be done with the physical mouse. Record on this " +
+                      "screen with xapper_screen_note that dragging here starts drag-and-drop, so the next visit does not " +
+                      "try again."
+        });
     }
 
     /// <summary>
@@ -1055,6 +1085,20 @@ public sealed class IpcServer
             how = "synthetic mouse input (no cursor movement)";
             if (dragResult == GestureResult.Stalled)
             {
+                // 드래그가 앱의 끌어놓기 루프를 열었으면 그대로 두면 안 된다. 루프는 입력 큐에 들어온 메시지를 보고서야
+                // 버튼 상태를 다시 확인하는데, 우리는 메시지를 큐가 아니라 창으로 보내므로 놓음을 끝내 보지 못하고,
+                // 사람이 키나 마우스를 건드릴 때까지 앱이 그 안에 갇힌다(실측). 잠깐 기다려도 끝나지 않고 누군가
+                // 마우스를 붙잡고 있으면 그 루프로 보고 취소한다. 대화상자는 마우스를 붙잡지 않으므로 여기 걸리지 않는다.
+                var uiThread = Actions.DragLoopBreaker.ThreadOf(outcome.Hwnd);
+                if (!await StalledHandlerFinishedAsync(DragLoopProbeMs)
+                    && uiThread != 0
+                    && Actions.DragLoopBreaker.CaptureHolderOf(uiThread) != IntPtr.Zero)
+                {
+                    var released = Actions.DragLoopBreaker.TryCancel(uiThread, outcome.Hwnd)
+                                   && await StalledHandlerFinishedAsync(request.Timeout);
+                    return DragLoopCancelledResponse(message.Id, released);
+                }
+
                 if (!await StalledHandlerFinishedAsync(request.Timeout))
                     return StillHandlingResponse(message.Id, "The drag", request.Timeout);
                 // 스푸프가 꺼진 뒤 보낸 이동·뗌은 버튼이 안 눌린 것으로 보였으므로 드래그가 일찍 끝났을 수 있다.

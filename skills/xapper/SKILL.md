@@ -94,6 +94,14 @@ When an action refuses, the message names the single condition that blocked it:
 | `cannot be resolved` | the ref is stale, or its element left the tree as virtualized rows and closed dialogs do | take fresh refs |
 | `matches N elements` | the selector is ambiguous | add a second clause, or pass a ref |
 
+**A drag over something that supports drag-and-drop cannot be finished cursor-free.** Some controls
+start a drag-and-drop loop the moment the button is held and the mouse moves - tree and graph
+nodes that can be re-parented, list rows that can be dropped elsewhere. That loop takes the drop
+position from the real cursor and only notices input arriving through the system queue, so a
+synthetic drag can open it but never complete it. Xapper notices, cancels it with Escape so the
+app does not freeze, and tells you nothing was dropped. When you see that, the drop has to be done
+by hand; note on the screen that dragging there starts drag-and-drop, so no later visit repeats it.
+
 **A ref outlives its meaning, which is worse than failing.** `xapper_snapshot` does not merely
 invalidate earlier refs - it restarts numbering from 1, so a ref taken before a snapshot may now
 resolve to a *different* element and act on it without complaint. Use refs from the most recent
