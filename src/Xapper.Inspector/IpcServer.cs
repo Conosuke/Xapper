@@ -1078,11 +1078,19 @@ public sealed class IpcServer
             if (modifiers != ModifierKeys.None)
                 warning = "modifiers do not apply to a thumb drag (the control's own drag events were used) and were ignored.";
         }
-        else if (SyntheticMouse.TryDrag(outcome.Hwnd, outcome.Start, outcome.End, modifiers) is var dragResult
+        else if (SyntheticMouse.TryDrag(outcome.Hwnd, outcome.Start, outcome.End, modifiers, out var dragCaptured)
+                     is var dragResult
                  && dragResult != GestureResult.Unavailable)
         {
             // 후킹 경로: 커서를 옮기지 않고 대상 창에 드래그를 보낸다.
             how = "synthetic mouse input (no cursor movement)";
+
+            // 메시지가 전달된 것과 앱이 그것을 끌기로 받아들인 것은 다르다. 아무도 마우스를 붙잡지 않았다면 앱은
+            // 이 동작을 지나가는 마우스로 보았을 가능성이 크므로, 성공처럼만 보이지 않게 알린다.
+            if (dragResult == GestureResult.Delivered && !dragCaptured)
+                warning = "nothing in the app took hold of the mouse during the drag, so it most likely treated the " +
+                          "gesture as the pointer passing over rather than as a drag, and nothing may have moved. " +
+                          "Check the result with xapper_events or a property before relying on it.";
             if (dragResult == GestureResult.Stalled)
             {
                 // 드래그가 앱의 끌어놓기 루프를 열었으면 그대로 두면 안 된다. 루프는 입력 큐에 들어온 메시지를 보고서야
