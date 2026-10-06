@@ -81,14 +81,16 @@ public class SyntheticMouseGestureTests
     }
 
     [Fact]
-    public void TryClick_SpoofsButtonsAndModifiersOnlyWhileHandlingItsOwnMessages()
+    public void TryClick_SpoofsModifiersOnlyWhileHandlingItsOwnMessages()
     {
         WithWindow(
             () => new Border { Background = System.Windows.Media.Brushes.LightGray, Width = 120, Height = 60 },
             (window, hwnd, border) =>
             {
-                // 제스처 중에도 우리 메시지 밖에서 읽는 상태는 진짜여야 한다 — 그래야 같은 시간에 들어온 사람의 진짜
-                // 입력이 엉뚱하게 처리되지 않는다(측정: 느린 핸들러 동안 프로세스 전체가 가짜 상태를 봤던 결함).
+                // 제스처 중에도 우리 메시지 밖에서 읽는 수식키는 진짜여야 한다 — 그래야 같은 시간에 사람이 누른 진짜
+                // 키가 엉뚱한 조합으로 처리되지 않는다(측정: 느린 핸들러 동안 프로세스 전체가 가짜 상태를 봤던 결함).
+                // 버튼은 다르다. 대상 UI 스레드에서는 제스처 동안 계속 눌림으로 답한다 — WPF 의 재동기화가 메시지 밖에서
+                // 버튼을 다시 읽기 때문이다(TryDrag_KeepsTheButtonPressed_ForEveryMoveAndEveryLateRead).
                 var insideHandler = ModifierKeys.None;
                 var outsideSamples = new List<ModifierKeys>();
                 border.PreviewMouseLeftButtonDown += (_, _) =>
@@ -263,6 +265,100 @@ public class SyntheticMouseGestureTests
     /// 제스처를 워커 스레드에서 실행하고 창 스레드는 그동안 메시지를 펌프합니다. 프로덕션에서 IPC 스레드가 보내는
     /// 것과 같은 경로라, 같은 스레드에서 SendMessage 할 때는 false 인 InSendMessage 스코프가 실제로 검증된다.
     /// </summary>
+    [Fact]
+    public void TryDrag_KeepsTheButtonPressed_ForEveryMoveAndEveryLateRead()
+    {
+        // 요소가 움직이면 WPF 는 레이아웃 뒤에 스스로 마우스 상태를 다시 읽어 MouseMove 를 한 번 더 낸다. 버튼 스푸프가
+        // 우리 메시지 안으로만 좁혀져 있으면 그 이동은 안 눌린 것으로 보여, 드래그가 걸음마다 누름과 뗌을 깜빡였다
+        // (실측: 여덟 걸음에 MouseMove 18번 중 9번이 안 눌림). 이벤트마다 버튼을 보는 핸들러는 버티지만, 상태 기계로
+        // 제스처를 판정하는 캔버스(yFiles)는 그 틈을 드래그의 끝으로 보고 아무것도 옮기지 않았다.
+        WithWindow(
+            () => new Canvas { Width = 280, Height = 180, Background = System.Windows.Media.Brushes.White },
+            (window, hwnd, canvas) =>
+            {
+                var node = new Border { Width = 40, Height = 30, Background = System.Windows.Media.Brushes.SteelBlue };
+                Canvas.SetLeft(node, 20);
+                Canvas.SetTop(node, 60);
+                canvas.Children.Add(node);
+                window.UpdateLayout();
+
+                Point? grab = null;
+                var releasedWhileHeld = 0;
+                var lateReleased = 0;
+
+                node.MouseLeftButtonDown += (_, e) => { grab = e.GetPosition(canvas); node.CaptureMouse(); };
+                node.MouseLeftButtonUp += (_, _) => { grab = null; node.ReleaseMouseCapture(); };
+                node.MouseMove += (_, e) =>
+                {
+                    if (grab is not { } g)
+                        return;
+
+                    if (e.LeftButton != MouseButtonState.Pressed)
+                        releasedWhileHeld++;
+
+                    // 디스패처 작업으로 미뤄 버튼을 다시 읽는 캔버스를 흉내 낸다.
+                    node.Dispatcher.BeginInvoke(() =>
+                    {
+                        if (grab is not null && Mouse.LeftButton != MouseButtonState.Pressed)
+                            lateReleased++;
+                    });
+
+                    // 끄는 동안 자기를 옮긴다. 이 레이아웃 변화가 WPF 의 재동기화를 부른다.
+                    Canvas.SetLeft(node, 20 + (e.GetPosition(canvas).X - g.X));
+                };
+
+                var start = node.PointToScreen(new Point(20, 15));
+                var end = new Point(start.X + 120, start.Y);
+
+                var result = FromWorker(() => SyntheticMouse.TryDrag(hwnd, start, end));
+                System.Windows.Threading.Dispatcher.CurrentDispatcher.Invoke(
+                    () => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+
+                Assert.Equal(GestureResult.Delivered, result);
+                Assert.Equal(0, releasedWhileHeld);
+                Assert.Equal(0, lateReleased);
+                Assert.InRange(Canvas.GetLeft(node), 130, 150);
+            });
+    }
+
+    [Fact]
+    public void TryDrag_SaysWhetherAnythingTookHoldOfTheMouse()
+    {
+        // 메시지가 전달된 것과 앱이 그것을 끌기로 받아들인 것은 다르다. 끌기를 받아들이는 컨트롤은 누르는 순간 마우스를
+        // 붙잡으므로, 아무도 붙잡지 않았다면 앱은 지나가는 마우스로 보았을 가능성이 크다(실측: 노드가 그대로인 캔버스에서
+        // 응답만 성공이었다).
+        WithWindow(
+            () => new Canvas { Width = 280, Height = 180, Background = System.Windows.Media.Brushes.White },
+            (window, hwnd, canvas) =>
+            {
+                var plain = new Border { Width = 60, Height = 40, Background = System.Windows.Media.Brushes.LightGray };
+                var draggable = new Border { Width = 60, Height = 40, Background = System.Windows.Media.Brushes.SteelBlue };
+                Canvas.SetLeft(plain, 10);
+                Canvas.SetTop(plain, 10);
+                Canvas.SetLeft(draggable, 10);
+                Canvas.SetTop(draggable, 100);
+                canvas.Children.Add(plain);
+                canvas.Children.Add(draggable);
+                draggable.MouseLeftButtonDown += (_, _) => draggable.CaptureMouse();
+                draggable.MouseLeftButtonUp += (_, _) => draggable.ReleaseMouseCapture();
+                window.UpdateLayout();
+
+                var overPlain = plain.PointToScreen(new Point(30, 20));
+                var overDraggable = draggable.PointToScreen(new Point(30, 20));
+
+                var plainCaptured = true;
+                var draggableCaptured = false;
+                FromWorker(() => SyntheticMouse.TryDrag(
+                    hwnd, overPlain, new Point(overPlain.X + 80, overPlain.Y), ModifierKeys.None, out plainCaptured));
+                FromWorker(() => SyntheticMouse.TryDrag(
+                    hwnd, overDraggable, new Point(overDraggable.X + 80, overDraggable.Y), ModifierKeys.None,
+                    out draggableCaptured));
+
+                Assert.False(plainCaptured);
+                Assert.True(draggableCaptured);
+            });
+    }
+
     private static T FromWorker<T>(Func<T> gesture)
     {
         var dispatcher = System.Windows.Threading.Dispatcher.CurrentDispatcher;

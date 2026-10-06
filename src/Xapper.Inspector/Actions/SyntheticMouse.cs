@@ -171,14 +171,35 @@ internal static class SyntheticMouse
     /// <param name="modifiers">함께 눌린 것으로 볼 수식키(Ctrl+드래그 복사 등).</param>
     /// <returns>후킹 경로로 보냈으면 Delivered(앱이 제때 처리) 또는 Stalled(앱이 느리거나 모달을 열어 스푸프를 일찍 끔), 후크를 쓸 수 없으면 Unavailable.</returns>
     public static GestureResult TryDrag(IntPtr hwnd, Point start, Point end, ModifierKeys modifiers = ModifierKeys.None)
+        => TryDrag(hwnd, start, end, modifiers, out _);
+
+    /// <summary>
+    /// 드래그를 보내고, 그동안 앱이 마우스를 붙잡았는지도 알려 줍니다.
+    ///
+    /// 붙잡았는지를 보는 이유가 있다. 드래그를 받아들이는 컨트롤은 거의 예외 없이 누르는 순간 마우스를 붙잡는다.
+    /// 드래그 내내 아무도 붙잡지 않았다면 앱은 그 동작을 끌기가 아니라 지나가는 마우스로 받아들였을 가능성이 크다.
+    /// 메시지가 전달되었다는 사실만으로 "끌었다" 고 답하면, 아무것도 움직이지 않았는데도 성공처럼 보여 원인을 찾기가
+    /// 늦어진다(실측: 자체 입력 처리를 하는 그래프 캔버스에서 노드가 그대로인데 응답은 성공이었다).
+    /// </summary>
+    /// <param name="hwnd">드래그를 받을 창.</param>
+    /// <param name="start">드래그 시작 스크린 디바이스 좌표.</param>
+    /// <param name="end">드래그 끝 스크린 디바이스 좌표.</param>
+    /// <param name="modifiers">함께 눌린 것으로 볼 수식키.</param>
+    /// <param name="captured">드래그 도중 대상 UI 스레드에서 누군가 마우스를 붙잡았으면 true.</param>
+    public static GestureResult TryDrag(
+        IntPtr hwnd, Point start, Point end, ModifierKeys modifiers, out bool captured)
     {
-        return RunGesture(hwnd, start, modifiers, mk =>
+        var uiThread = DragLoopBreaker.ThreadOf(hwnd);
+        var heldCapture = false;
+
+        var result = RunGesture(hwnd, start, modifiers, mk =>
         {
             Send(hwnd, WM_MOUSEMOVE, (IntPtr)mk, ToClient(hwnd, start));
             Sleep();
             InputSpoof.SetLeftDown(true);
             Send(hwnd, WM_LBUTTONDOWN, (IntPtr)(mk | MK_LBUTTON), ToClient(hwnd, start));
             Sleep();
+            heldCapture |= DragLoopBreaker.CaptureHolderOf(uiThread) != IntPtr.Zero;
 
             for (var step = 1; step <= DragSteps; step++)
             {
@@ -189,12 +210,16 @@ internal static class SyntheticMouse
                 InputSpoof.SetPosition(point);
                 Send(hwnd, WM_MOUSEMOVE, (IntPtr)(mk | MK_LBUTTON), ToClient(hwnd, point));
                 Sleep();
+                heldCapture |= DragLoopBreaker.CaptureHolderOf(uiThread) != IntPtr.Zero;
             }
 
             InputSpoof.SetLeftDown(false);
             Send(hwnd, WM_LBUTTONUP, (IntPtr)mk, ToClient(hwnd, end));
             Sleep();
         });
+
+        captured = heldCapture;
+        return result;
     }
 
     /// <summary>

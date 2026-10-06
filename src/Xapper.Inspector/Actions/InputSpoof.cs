@@ -71,6 +71,9 @@ internal static class InputSpoof
     private static volatile IntPtr _hwnd;
     private static volatile uint _senderThreadId;
 
+    /// <summary>제스처 대상 창을 만든 UI 스레드. 제스처 동안 이 스레드가 묻는 버튼 상태에는 가짜로 답한다.</summary>
+    private static volatile uint _targetThreadId;
+
     private static bool _installAttempted;
     private static bool _installed;
 
@@ -143,6 +146,7 @@ internal static class InputSpoof
     {
         _hwnd = hwnd;
         _senderThreadId = GetCurrentThreadId();
+        _targetThreadId = GetWindowThreadProcessId(hwnd, out _);
         SetPosition(screen);
         _lDown = false;
         _rDown = false;
@@ -157,6 +161,7 @@ internal static class InputSpoof
         _spoofMouse = false;
         _hwnd = IntPtr.Zero;
         _senderThreadId = 0;
+        _targetThreadId = 0;
         _spoofModifiers = false;
         _lDown = false;
         _rDown = false;
@@ -223,21 +228,29 @@ internal static class InputSpoof
 
         if (_spoofMouse)
         {
-            // 우리 메시지를 처리하는 중이 아니면(사람의 진짜 입력, 타이머 등) 진짜 상태를 답한다.
-            if (!InSendMessage() && GetCurrentThreadId() != _senderThreadId)
-                return false;
+            // 대상 앱의 UI 스레드면 우리 메시지 밖에서 물어도 가짜로 답한다. 요소가 움직이면 WPF 는 레이아웃 뒤에
+            // 스스로 마우스 상태를 다시 읽어(Synchronize) MouseMove 를 한 번 더 내는데, 그때 진짜 버튼(안 눌림)을 보면
+            // 앱에게는 드래그가 걸음마다 누름과 뗌을 깜빡이는 것으로 보인다(실측: 여덟 걸음에 MouseMove 18번, 그중
+            // 9번이 안 눌림. 메시지 밖에서 읽은 버튼 상태는 18번 모두 안 눌림). 이벤트마다 버튼을 보는 핸들러는 버티지만,
+            // 상태 기계로 제스처를 판정하는 캔버스는 그 틈을 드래그의 끝으로 본다.
+            // 그 밖의 스레드는 여전히 우리 메시지를 처리하는 중일 때만 가짜로 답한다. 가짜 상태가 보이는 시간은
+            // 제스처 한 번으로 묶이고, 메시지 하나가 정체되면 워치독이 스푸프를 통째로 끈다.
+            //
+            // 수식키는 넓히지 않는다. 재동기화는 마우스 상태만 다시 읽으므로 수식키는 깜빡이지 않고, 같은 시간에 사람이
+            // 진짜로 누른 키가 가짜 조합으로 읽히는 일은 그대로 막아 둔다.
+            var thread = GetCurrentThreadId();
+            var handlingOurs = InSendMessage() || thread == _senderThreadId;
 
-            if (virtualKey == VK_LBUTTON)
+            if (virtualKey is VK_LBUTTON or VK_RBUTTON)
             {
-                state = _lDown ? PressedState : (short)0;
+                if (!handlingOurs && thread != _targetThreadId)
+                    return false;
+
+                state = (virtualKey == VK_LBUTTON ? _lDown : _rDown) ? PressedState : (short)0;
                 return true;
             }
-            if (virtualKey == VK_RBUTTON)
-            {
-                state = _rDown ? PressedState : (short)0;
-                return true;
-            }
-            return TrySpoofModifier(virtualKey, out state);
+
+            return handlingOurs && TrySpoofModifier(virtualKey, out state);
         }
 
         // 키 주입 경로: 키는 디스패처 작업 안에서 라우팅되므로(SendMessage 아님) 스푸프를 조건 없이 답한다.
