@@ -142,6 +142,23 @@ builder.Services.AddMcpServer(options =>
     options.ServerInstructions = serverInstructions;
 })
 .WithStdioServerTransport()
+// 도구가 받지 않는 인자를 SDK 는 말없이 버린다. 그러면 호출은 성공처럼 보이는데 준 값은 쓰이지 않는다.
+// 모든 도구 호출이 지나가는 이 자리에서 한 번에 막는다(UnknownArgumentGuard).
+.WithRequestFilters(filters => filters.AddCallToolFilter(next => async (context, ct) =>
+{
+    if (context.MatchedPrimitive is McpServerTool tool
+        && context.Params?.Arguments is { Count: > 0 } given
+        && UnknownArgumentGuard.Check(tool.ProtocolTool.Name, tool.ProtocolTool.InputSchema, given.Keys) is { } refusal)
+    {
+        return new ModelContextProtocol.Protocol.CallToolResult
+        {
+            IsError = true,
+            Content = [new ModelContextProtocol.Protocol.TextContentBlock { Text = refusal }]
+        };
+    }
+
+    return await next(context, ct);
+}))
 .WithTools<ProcessTools>()
 .WithTools<SnapshotTools>()
 .WithTools<ActionTools>()
