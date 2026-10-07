@@ -1,6 +1,5 @@
 // Xapper MCP 서버 진입점.
 // stdio 전송을 통해 AI 에이전트와 통신하며, WPF 프로세스 인젝션 및 UI 자동화 도구를 제공.
-// 환경 변수 XAPPER_INSPECTOR_BASE_DIR, XAPPER_GENERIC_INJECTOR_DIR로 경로 오버라이드 가능.
 
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -16,25 +15,10 @@ var builder = Host.CreateApplicationBuilder(args);
 // MCP SDK의 StdioServerTransport가 stdout을 점유하므로 콘솔 로깅 비활성화
 builder.Logging.ClearProviders();
 
-// 경로 해석: 환경 변수 우선, 없으면 임베디드 리소스 추출
-var envInspectorDir = Environment.GetEnvironmentVariable("XAPPER_INSPECTOR_BASE_DIR");
-var envInjectorDir = Environment.GetEnvironmentVariable("XAPPER_GENERIC_INJECTOR_DIR");
-
-string inspectorBaseDir;
-string genericInjectorDir;
-
-if (envInspectorDir is not null && envInjectorDir is not null)
-{
-    inspectorBaseDir = envInspectorDir;
-    genericInjectorDir = envInjectorDir;
-}
-else
-{
-    var extractor = new PayloadExtractor();
-    extractor.ExtractAll();
-    inspectorBaseDir = envInspectorDir ?? extractor.InspectorBaseDir;
-    genericInjectorDir = envInjectorDir ?? extractor.GenericInjectorDir;
-}
+// Inspector 와 GenericInjector 는 서버에 내장된 것을 내용 해시 폴더에 풀어 쓴다. 바깥에서 경로를 지정하게 두면
+// 서버를 다시 배포해도 그 경로의 옛 Inspector 가 계속 주입된다(실측: 10월 1일 빌드가 고정된 채 수정이 닿지 않았다).
+var extractor = new PayloadExtractor();
+extractor.ExtractAll();
 
 // 서버 전체에 걸친 사용 지침. MCP 규격이 초기화 때 한 번 전달하는 자리다.
 //
@@ -125,7 +109,8 @@ var serverInstructions = """
 
 builder.Services.AddSingleton<SessionManager>();
 builder.Services.AddSingleton<IOperatorNotice, OperatorNotice>();
-builder.Services.AddSingleton(new WpfProcessInjector(inspectorBaseDir, genericInjectorDir));
+builder.Services.AddSingleton(new WpfProcessInjector(extractor.InspectorBaseDir, extractor.GenericInjectorDir));
+builder.Services.AddSingleton(new InspectorBuildCheck(extractor.InspectorBuildIds()));
 
 // 화면 기록은 서버가 다시 뜨더라도 남아야 하므로 사용자 로컬 앱 데이터 폴더의 파일 하나에 담는다.
 builder.Services.AddSingleton<ScreenTracker>();

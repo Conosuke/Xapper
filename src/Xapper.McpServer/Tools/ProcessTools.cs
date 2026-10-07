@@ -4,6 +4,7 @@ using ModelContextProtocol.Server;
 using Xapper.Injector;
 using Xapper.McpServer.Infrastructure;
 using Xapper.Protocol;
+using Xapper.Protocol.Messages.Responses;
 
 namespace Xapper.McpServer.Tools;
 
@@ -18,6 +19,7 @@ public sealed class ProcessTools
     private readonly SessionManager _sessionManager;
     private readonly WpfProcessInjector _injector;
     private readonly IOperatorNotice _notice;
+    private readonly InspectorBuildCheck _buildCheck;
 
     /// <summary>띄운 앱의 파이프가 생겼는지 다시 확인하는 간격 (밀리초).</summary>
     private const int PipePollMs = 50;
@@ -29,11 +31,13 @@ public sealed class ProcessTools
     /// <summary>
     /// <see cref="ProcessTools"/>의 새 인스턴스를 생성합니다.
     /// </summary>
-    public ProcessTools(SessionManager sessionManager, WpfProcessInjector injector, IOperatorNotice notice)
+    public ProcessTools(
+        SessionManager sessionManager, WpfProcessInjector injector, IOperatorNotice notice, InspectorBuildCheck buildCheck)
     {
         _sessionManager = sessionManager;
         _injector = injector;
         _notice = notice;
+        _buildCheck = buildCheck;
     }
 
     #endregion
@@ -69,25 +73,33 @@ public sealed class ProcessTools
         [Description("Timeout in ms to wait for connection (default 10000)")] int timeout = 10000,
         CancellationToken ct = default)
     {
-        try
-        {
-            _injector.Inject(pid);
-        }
-        catch (Exception ex)
-        {
-            return $"[INJECT FAILED] {ex.Message}";
-        }
-
         using var timeoutCts = new CancellationTokenSource(timeout);
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(ct, timeoutCts.Token);
 
-        try
+        // 이 서버가 재시작됐거나 다른 세션이 붙었다 떠난 프로세스에는 Inspector 가 이미 들어 있고, 그 파이프가 다음
+        // 연결을 기다린다. 거기에 다시 주입하면 같은 이름의 어셈블리가 이미 올라와 있다며 실패하므로(0x80131621),
+        // 파이프가 있으면 주입 없이 바로 붙는다. 파이프 이름 목록만 본다: File.Exists 는 확인하려고 파이프에 한 번
+        // 연결했다 끊어서, 연결을 하나만 받는 Inspector 의 차례를 빼앗는다.
+        var alreadyInside = Directory.EnumerateFiles(@"\\.\pipe\", IpcPipeNames.ForProcess(pid)).Any();
+        if (!alreadyInside)
         {
-            await Task.Delay(2000, linkedCts.Token);
-        }
-        catch (OperationCanceledException)
-        {
-            return "[TIMEOUT] Cancelled during wait for inspector startup";
+            try
+            {
+                _injector.Inject(pid);
+            }
+            catch (Exception ex)
+            {
+                return $"[INJECT FAILED] {ex.Message}";
+            }
+
+            try
+            {
+                await Task.Delay(2000, linkedCts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                return "[TIMEOUT] Cancelled during wait for inspector startup";
+            }
         }
 
         try
@@ -101,15 +113,17 @@ public sealed class ProcessTools
 
         try
         {
-            var client = _sessionManager.GetActive();
-            await client.PingAsync(linkedCts.Token);
+            if (await RefuseOtherBuildAsync(pid, linkedCts.Token) is { } refusal)
+                return refusal;
         }
         catch (Exception ex)
         {
             return $"[PING FAILED] {ex.Message}";
         }
 
-        return $"Attached to process {pid}. Connection verified.";
+        return alreadyInside
+            ? $"Attached to process {pid}, whose inspector was already running. Connection verified."
+            : $"Attached to process {pid}. Connection verified.";
     }
 
     /// <summary>
@@ -194,6 +208,10 @@ public sealed class ProcessTools
             }
 
             await _sessionManager.AttachAsync(process.Id, timeoutCts.Token);
+
+            // 이 서버가 방금 넣은 훅이라 대개 같은 빌드다. 그래도 같은 판정을 거쳐야 attach 와 말이 어긋나지 않는다.
+            if (await RefuseOtherBuildAsync(process.Id, timeoutCts.Token) is { } refusal)
+                return refusal;
         }
         catch (OperationCanceledException)
         {
@@ -242,6 +260,30 @@ public sealed class ProcessTools
         return pid.HasValue
             ? $"Detached from process {pid}."
             : "Detached from active session.";
+    }
+
+    #endregion
+
+    #region Private Methods
+
+    /// <summary>
+    /// 방금 연결한 Inspector 가 이 서버와 같은 빌드인지 핑으로 확인하고, 아니면 연결을 끊고 거절 문장을 돌려줍니다.
+    /// </summary>
+    /// <param name="pid">연결한 프로세스.</param>
+    /// <param name="ct">취소 토큰.</param>
+    /// <returns>같은 빌드면 null, 아니면 거절 문장.</returns>
+    private async Task<string?> RefuseOtherBuildAsync(int pid, CancellationToken ct)
+    {
+        var pong = await _sessionManager.GetActive().PingAsync(ct);
+        var reported = pong.Payload is { } payload
+            ? IpcSerializer.DeserializePayload<PongResponse>(payload).InspectorBuild
+            : null;
+
+        if (_buildCheck.Refusal(pid, reported) is not { } refusal)
+            return null;
+
+        await _sessionManager.DetachAsync(pid, ct);
+        return refusal;
     }
 
     #endregion

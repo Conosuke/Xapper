@@ -507,7 +507,8 @@ public sealed class IpcServer
         var response = new PongResponse
         {
             ProcessId = Environment.ProcessId,
-            ProcessName = System.Diagnostics.Process.GetCurrentProcess().ProcessName
+            ProcessName = System.Diagnostics.Process.GetCurrentProcess().ProcessName,
+            InspectorBuild = typeof(IpcServer).Assembly.ManifestModule.ModuleVersionId.ToString("N")
         };
         return Task.FromResult(IpcSerializer.CreateResponse(message.Id, response));
     }
