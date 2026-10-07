@@ -1060,9 +1060,11 @@ public sealed class IpcServer
             }
 
             // 후킹 드래그를 걸 대상 창. source(없으면 target)의 HwndSource 를 UI 스레드에서 구한다.
+            // 요소 없이 화면 좌표만 받았으면 출발점에 있는 이 앱의 창으로 보낸다. 창을 정하지 못하면 실제 마우스로
+            // 넘어가 사람의 커서를 빼앗고, 그 지점을 덮은 다른 앱에 입력이 샌다(실측).
             var hwnd = source is not null ? HwndHandleOf(source)
                      : target is not null ? HwndHandleOf(target)
-                     : IntPtr.Zero;
+                     : VisualRoots.SourceAt(start)?.Handle ?? IntPtr.Zero;
             return (Start: start, End: end, UsedThumb: false, Hwnd: hwnd);
         }, request.Timeout);
         if (!dragResolved)
