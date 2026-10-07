@@ -1,3 +1,5 @@
+using System.Reflection.Metadata;
+using System.Reflection.PortableExecutable;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -109,6 +111,30 @@ public sealed class PayloadExtractor
             foreach (var name in InspectorFiles)
                 ExtractResource(assembly, $"{tfm}.{name}", tfmDir, name);
         }
+    }
+
+    /// <summary>
+    /// 내장된 TFM별 Inspector 의 빌드 식별자(MVID, "N" 형식)를 돌려줍니다. 앱 안의 Inspector 가 핑으로 알린 값과
+    /// 비교해 같은 빌드인지 판정하는 데 쓴다. 파일로 풀지 않고 메타데이터만 읽는다.
+    /// </summary>
+    /// <returns>TFM마다 하나씩의 빌드 식별자.</returns>
+    /// <exception cref="InvalidOperationException">어느 TFM의 Inspector 리소스가 없는 경우.</exception>
+    public IReadOnlyList<string> InspectorBuildIds()
+    {
+        var assembly = typeof(PayloadExtractor).Assembly;
+        var ids = new List<string>();
+
+        foreach (var tfm in SupportedTfms)
+        {
+            var resourceName = $"{ResourcePrefix}{tfm}.Xapper.Inspector.dll";
+            using var stream = assembly.GetManifestResourceStream(resourceName)
+                ?? throw new InvalidOperationException($"Embedded resource '{resourceName}' not found in assembly.");
+            using var pe = new PEReader(stream);
+            var metadata = pe.GetMetadataReader();
+            ids.Add(metadata.GetGuid(metadata.GetModuleDefinition().Mvid).ToString("N"));
+        }
+
+        return ids;
     }
 
     #endregion

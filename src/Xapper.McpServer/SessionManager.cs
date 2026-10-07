@@ -60,8 +60,9 @@ public sealed class SessionManager : IAsyncDisposable
             _sessions.Remove(pid);
         }
 
+        // 남은 세션이 없으면 null 이어야 한다. FirstOrDefault 는 빈 목록에서 0 을 내서, 없는 프로세스 0 이 활성인 것처럼 보였다.
         if (_activeProcessId == pid)
-            _activeProcessId = _sessions.Keys.FirstOrDefault();
+            _activeProcessId = _sessions.Count > 0 ? _sessions.Keys.First() : null;
     }
 
     /// <summary>

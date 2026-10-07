@@ -252,14 +252,9 @@ src/Xapper.McpServer/bin/Debug/net9.0-windows/Xapper.McpServer.exe
 }
 ```
 
-### **환경변수 (선택, 개발자용)**
+### **Inspector 버전**
 
-일반 사용 시 환경변수 설정은 **불필요**합니다. 개발/디버깅 시 DLL 경로를 직접 지정하려면:
-
-| 환경변수 | 설명 |
-|:---|:---|
-| `XAPPER_INSPECTOR_BASE_DIR` | Inspector DLL 기본 디렉토리 오버라이드 (TFM별 하위 폴더 포함) |
-| `XAPPER_GENERIC_INJECTOR_DIR` | GenericInjector DLL 디렉토리 오버라이드 |
+서버는 자기 안에 내장된 Inspector만 주입합니다. 다른 Xapper 빌드의 Inspector가 이미 들어 있는 앱에는 붙지 않고 거절하므로, 그런 앱은 닫았다가 다시 띄운 뒤 붙으세요. 실행 중인 프로세스 안의 Inspector는 교체할 수 없습니다.
 
 ### **에이전트 스킬 설치 (권장)**
 
