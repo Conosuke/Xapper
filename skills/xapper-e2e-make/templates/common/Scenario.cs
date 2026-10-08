@@ -64,9 +64,10 @@ public static class Scenario
             {
                 leftover.Kill();
             }
-            catch (InvalidOperationException)
+            catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
             {
-                // It exited between being listed and being killed.
+                // It exited between being listed and being killed, or it cannot be closed from here.
+                Console.Error.WriteLine($"could not close {leftover.ProcessName} ({leftover.Id}): {ex.Message}");
             }
         }
     }

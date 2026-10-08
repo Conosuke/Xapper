@@ -29,7 +29,7 @@ var listed = list.Cases.Select(c => c.File).ToHashSet(StringComparer.OrdinalIgno
 foreach (var path in Directory.GetFiles(folder, "C*.cs"))
 {
     var name = Path.GetFileName(path);
-    if (Regex.IsMatch(name, @"^C\d+-") && !listed.Contains(name))
+    if (Regex.IsMatch(name, @"^C\d+-", RegexOptions.IgnoreCase) && !listed.Contains(name))
         problems.Add($"{name} is not listed in cases.yaml");
 }
 foreach (var id in args.Where(id => list.Cases.All(c => c.Id != id)))

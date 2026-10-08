@@ -1,6 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <!-- Shared by every case file in the e2e folder through `#:project common/E2E.Common.csproj`. -->
+  <!-- Shared by every case file in the e2e folder through `#:project common/E2E.Common.csproj`.
+       net10.0 on purpose: the case files and run-all.cs are .NET 10 file-based apps (#:project, #:package),
+       so this must not be lowered to match an older target the rest of the repository may use. -->
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
