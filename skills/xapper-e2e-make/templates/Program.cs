@@ -6,9 +6,11 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using E2E.Common;
 
-var folder = Assembly.GetExecutingAssembly().GetCustomAttributes<AssemblyMetadataAttribute>()
-                 .FirstOrDefault(a => a.Key == "E2EFolder")?.Value
-             ?? Environment.CurrentDirectory;
+// The folder baked in at build time; when the build was copied to another machine that path is gone,
+// so fall back to the folder the run was started from.
+var baked = Assembly.GetExecutingAssembly().GetCustomAttributes<AssemblyMetadataAttribute>()
+                .FirstOrDefault(a => a.Key == "E2EFolder")?.Value;
+var folder = baked is not null && Directory.Exists(baked) ? baked : Environment.CurrentDirectory;
 
 try
 {
@@ -22,7 +24,10 @@ catch (InvalidOperationException ex)
     return 1;
 }
 
-var list = JsonSerializer.Deserialize<CaseList>(
+CaseList list;
+try
+{
+    list = JsonSerializer.Deserialize<CaseList>(
                File.ReadAllText(Path.Combine(folder, "cases.json")),
                new JsonSerializerOptions
                {
@@ -31,6 +36,12 @@ var list = JsonSerializer.Deserialize<CaseList>(
                    AllowTrailingCommas = true
                })
            ?? new CaseList();
+}
+catch (Exception ex) when (ex is IOException or JsonException)
+{
+    Console.Error.WriteLine($"cases.json could not be read, so nothing was run: {ex.Message}");
+    return 1;
+}
 
 // The cases in code: static classes marked [Case("Cxx")].
 var coded = new List<(string Id, Type Type)>();
