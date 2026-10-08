@@ -25,10 +25,10 @@ public sealed class Connection
     /// <param name="args">An anonymous object whose property names are the tool's argument names.</param>
     public async Task<string> Call(string tool, object? args = null)
     {
-        var text = await CallQuietly(tool, args);
-        if (text.IsError)
-            throw new InvalidOperationException($"{_name} {tool} failed: {text.Text}");
-        return text.Text;
+        var (text, isError) = await CallQuietly(tool, args);
+        if (isError)
+            throw new InvalidOperationException($"{_name} {tool} failed: {text}");
+        return text;
     }
 
     /// <summary>Calls a tool and returns its text and whether it is marked as an error, without throwing on that.</summary>

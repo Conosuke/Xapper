@@ -1,0 +1,3 @@
+<!-- MSBuild uses the nearest Directory.Build.props and stops looking. This empty one keeps the app
+     repository's own settings - its target framework, WPF, analyzers - out of the E2E project. -->
+<Project />

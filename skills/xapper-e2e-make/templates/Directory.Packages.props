@@ -1,0 +1,7 @@
+<!-- Central package management stays off here even if the app repository uses it, so the versions
+     written in E2E.csproj apply. -->
+<Project>
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+</Project>
