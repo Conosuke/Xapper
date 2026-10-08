@@ -366,10 +366,7 @@ internal sealed class ScriptSession
 
     private static bool IsFailure(IpcMessage response, string text)
     {
-        if (response.Type == "error"
-            || text.StartsWith("Error:", StringComparison.Ordinal)
-            || text.StartsWith("Failed:", StringComparison.Ordinal)
-            || text.StartsWith("FAIL", StringComparison.Ordinal))
+        if (response.Type == "error" || ToolFailure.IsFailure(text))
             return true;
 
         if (response.Payload is { } payload)
