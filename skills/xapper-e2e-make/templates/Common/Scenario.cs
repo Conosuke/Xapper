@@ -3,65 +3,55 @@ using System.Diagnostics;
 namespace E2E.Common;
 
 /// <summary>
-/// Runs one E2E case from start to finish: checks the environment, connects to Xapper, records the
-/// desktop, runs the case's own steps, and on the way out saves a failure screenshot, stops the
-/// recording and closes the app. A case holds only its steps.
+/// Runs one setup or one case inside the run's session: records it, runs its steps, saves a failure
+/// screenshot when a step fails, and stops the recording. Launching and closing the app belong to the
+/// setups and the runner, not to the steps of a case.
 /// </summary>
 public static class Scenario
 {
-    /// <summary>Runs one case and returns its exit code: 0 passed, 1 failed.</summary>
-    /// <param name="caseId">The case's id, for example "C01".</param>
-    /// <param name="e2eFolder">The e2e folder; the case's output goes to results/&lt;id&gt; under it.</param>
-    /// <param name="steps">The case's own steps.</param>
-    public static async Task<int> RunAsync(string caseId, string e2eFolder, Func<Session, Task> steps)
+    /// <summary>Runs one setup or case and returns whether every step passed.</summary>
+    /// <param name="session">The run's session.</param>
+    /// <param name="label">The case id or "setup &lt;name&gt;"; it labels output lines.</param>
+    /// <param name="output">The folder for the recording and the failure screenshot.</param>
+    /// <param name="steps">The steps to run.</param>
+    public static async Task<bool> RunStepsAsync(Session session, string label, string output, Func<Session, Task> steps)
     {
-        var app = Environment.GetEnvironmentVariable("APP_EXE");
-        var server = Environment.GetEnvironmentVariable("XAPPER_MCP");
-        if (app is null || server is null)
-        {
-            Console.Error.WriteLine($"[{caseId}] Set APP_EXE and XAPPER_MCP, in the environment or in e2e.env.");
-            return 1;
-        }
-
-        var output = Path.Combine(e2eFolder, "results", caseId);
+        session.Label = label;
+        session.Output = output;
         Directory.CreateDirectory(output);
-
-        await using var session = new Session(caseId, app, output);
-        var exitCode = 0;
         try
         {
-            await session.ConnectXapperAsync(server);
             await session.Call("xapper_record_start", new { path = Path.Combine(output, "run.mp4") });
             await steps(session);
-            Console.WriteLine($"[{caseId}] PASS");
+            Console.WriteLine($"[{label}] PASS");
+            return true;
         }
         catch (Exception ex)
         {
-            exitCode = 1;
-            Console.Error.WriteLine($"[{caseId}] FAIL {ex.Message}");
+            Console.Error.WriteLine($"[{label}] FAIL {ex.Message}");
             // Screen mode, because a failing step often leaves a dialog or popup the render mode leaves out.
             await session.TryAsync("xapper_screenshot", new { savePath = Path.Combine(output, "failure.png"), mode = "screen" });
+            return false;
         }
         finally
         {
             await session.TryAsync("xapper_record_stop");
-            CloseApp(app);
+            await session.EndStepAsync();
         }
-
-        return exitCode;
     }
 
     /// <summary>
     /// Closes every instance of the app by name: launch can start the app and still report an error,
     /// and then there is no pid to go by. Only one instance runs at a time, so this is safe.
     /// </summary>
-    private static void CloseApp(string app)
+    public static void CloseApp(string app)
     {
         foreach (var leftover in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(app)))
         {
             try
             {
                 leftover.Kill();
+                leftover.WaitForExit(5000);
             }
             catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
             {

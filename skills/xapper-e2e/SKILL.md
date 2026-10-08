@@ -5,9 +5,11 @@ description: Use when existing end-to-end test cases for a WPF app (an e2e folde
 
 # Running E2E cases
 
-The project's E2E cases live in `e2e/`: one C# file per case under `Cases/`, and `e2e/cases.json`
-listing each case's id, feature, title and what it checks. `e2e/E2E.csproj` is the one project that
-builds the cases and runs them without an agent. Your job is to pick the right cases, run them, and
+The project's E2E cases live in `e2e/`: one C# file per case under `Cases/`, the setups they start
+from under `Setups/`, and `e2e/cases.json` listing each case's id, feature, title, setup and what it
+checks. `e2e/E2E.csproj` is the one project that builds them and runs them without an agent. The
+runner runs a setup - launching the app and preparing what its cases need - once, then every case
+that names it in the same running app. Your job is to pick the right cases, run them, and
 report what happened - not to make them pass.
 
 ## 1. Pick the cases
@@ -44,28 +46,41 @@ dotnet run --project e2e -- C02 C05   # only these
 Before running anything, the runner checks that `cases.json` and the cases in code agree: no
 duplicate ids, no case listed without a matching `[Case("Cxx")]` class or the other way around, no
 listed file that is missing or whose name does not start with its id, no file in `Cases/` named
-like a case but left out of `cases.json`, no class without a `Run` method, no unknown id given on
-the command line. If any of that disagrees, nothing runs. That is a problem with the e2e folder, not with the
+like a case but left out of `cases.json`, no class without a `Run` method, no case naming a setup
+that does not exist, no setup name used twice, no unknown id given on the command line. If any of
+that disagrees, nothing runs.
+
+Cases run grouped by setup, in their `cases.json` order within a group; a single case still runs
+its setup first. After a case fails, the runner closes the app and runs the setup again before the
+next case, and it does the same before a case marked `"fresh"`. That is a problem with the e2e folder, not with the
 app; report it.
 
 ## 4. Read the result
 
-- The runner ends with a table - id, PASS or FAIL, time, feature and title - and exits 0 only if
-  every chosen case passed.
-- Every call a case makes prints one line, `[C02] xapper xapper_click: ...`; a failed case prints
-  `[C02] FAIL` with the call that failed and its full text.
-- `e2e/results/<id>/` holds `run.mp4` (the recording) and, for a failed case, `failure.png`.
+- The runner ends with a table - id, PASS or FAIL, time, setup, feature and title - and exits 0
+  only if every chosen case passed.
+- Every call prints one line, `[C02] xapper xapper_click: ...` for a case and
+  `[setup app-started] ...` for a setup; a failure prints `FAIL` with the call that failed and its
+  full text.
+- `e2e/results/<id>/` holds a case's `run.mp4` (the recording) and, when it failed, `failure.png`;
+  `e2e/results/setup-<name>/` holds the same for a setup.
+- A case marked `not run: setup <name> failed` never ran. The setup is what broke: read its output
+  and its `results/setup-<name>/`, not the case.
 
 Report each failed case with its id and title, the call that failed and its text, and the paths of
-its recording and screenshot.
+its recording and screenshot. When a setup failed, report the setup once and list the cases it kept
+from running.
 
 ## 5. When a case fails
 
 Never change a case's expected values, or loosen its checks, to make it pass. A failure means one of
-three things; say which you think it is and why:
+these things; say which you think it is and why:
 
 - **The app is wrong** - the feature broke. That is the finding; report it.
-- **The app changed on purpose** - a renamed control or a new step. The case needs updating:
-  offer to do it with the xapper-e2e-make skill, naming the case.
+- **The app changed on purpose** - a renamed control or a new step. The case or its setup needs
+  updating: offer to do it with the xapper-e2e-make skill, naming the case or the setup.
+- **A case before it left the app in a different state** - the case passes when run alone
+  (`-- C05`) but fails after others. The earlier case does not put back what it changed: offer to
+  fix that case, or to mark it `"fresh"`, with the xapper-e2e-make skill.
 - **The run environment** - ffmpeg missing, a variable unset, a locked desktop, another instance
   running. Fix it with the person and run again.

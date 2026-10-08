@@ -1,5 +1,7 @@
 // Runs this app's E2E cases: every case in cases.json, or only the ids given as arguments
-// (dotnet run --project e2e -- C02 C05). Nothing runs unless cases.json and the cases in code agree.
+// (dotnet run --project e2e -- C02 C05). Nothing runs unless cases.json and the code agree.
+// Each case names a setup; the runner runs a setup once and then every case that names it in the same
+// running app, sets up again after a failed case or before a case marked "fresh", and closes the app at the end.
 using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json;
@@ -43,12 +45,15 @@ catch (Exception ex) when (ex is IOException or JsonException)
     return 1;
 }
 
-// The cases in code: static classes marked [Case("Cxx")].
+// The cases and setups in code: static classes marked [Case("Cxx")] and [Setup("name")].
 var coded = new List<(string Id, Type Type)>();
+var setups = new List<(string Name, Type Type)>();
 foreach (var type in Assembly.GetExecutingAssembly().GetTypes())
 {
     if (type.GetCustomAttribute<CaseAttribute>() is { } mark)
         coded.Add((mark.Id, type));
+    if (type.GetCustomAttribute<SetupAttribute>() is { } setup)
+        setups.Add((setup.Name, type));
 }
 
 var problems = new List<string>();
@@ -64,6 +69,15 @@ foreach (var c in list.Cases)
         problems.Add($"{c.Id}: its file {c.File} does not start with {c.Id}-");
     if (!File.Exists(Path.Combine(folder, "Cases", c.File)))
         problems.Add($"{c.Id}: Cases/{c.File} does not exist");
+    if (setups.All(s => s.Name != c.Setup))
+        problems.Add($"{c.Id}: its setup \"{c.Setup}\" has no class marked [Setup(\"{c.Setup}\")]");
+}
+foreach (var twice in setups.GroupBy(s => s.Name).Where(g => g.Count() > 1))
+    problems.Add($"setup {twice.Key} is marked on {twice.Count()} classes: {string.Join(", ", twice.Select(s => s.Type.Name))}");
+foreach (var (name, type) in setups)
+{
+    if (RunOf(type) is null)
+        problems.Add($"setup {name} ({type.Name}) has no public static Task Run(Session x)");
 }
 foreach (var (id, type) in coded)
 {
@@ -94,27 +108,92 @@ if (problems.Count > 0)
     return 1;
 }
 
-var chosen = args.Length == 0 ? list.Cases : list.Cases.Where(c => args.Contains(c.Id)).ToList();
-var results = new List<(CaseEntry Case, bool Passed, TimeSpan Took)>();
-foreach (var c in chosen)
+var app = Environment.GetEnvironmentVariable("APP_EXE");
+var server = Environment.GetEnvironmentVariable("XAPPER_MCP");
+if (app is null || server is null)
 {
-    Console.WriteLine($"=== {c.Id} [{c.Feature}] {c.Title}");
-    var run = RunOf(coded.First(k => k.Id == c.Id).Type)
-              ?? throw new InvalidOperationException($"{c.Id} has no Run method.");
-    var clock = Stopwatch.StartNew();
-    var exitCode = await Scenario.RunAsync(c.Id, folder, run);
-    results.Add((c, exitCode == 0, clock.Elapsed));
+    Console.Error.WriteLine("Set APP_EXE and XAPPER_MCP, in the environment or in e2e.env.");
+    return 1;
+}
+
+// Cases that share a setup run together, so the app starts once for all of them; within a setup they
+// keep their order in cases.json.
+var chosen = (args.Length == 0 ? list.Cases : list.Cases.Where(c => args.Contains(c.Id)))
+             .GroupBy(c => c.Setup)
+             .SelectMany(group => group)
+             .ToList();
+var results = new List<(CaseEntry Case, bool Passed, TimeSpan Took, string Note)>();
+
+await using var session = new Session(app);
+try
+{
+    await session.ConnectXapperAsync(server);
+}
+catch (Exception ex)
+{
+    Console.Error.WriteLine($"The Xapper server did not start, so no case ran: {ex.Message}");
+    return 1;
+}
+
+string? ready = null;               // the setup the running app is in; null when it must be set up again
+var brokenSetups = new HashSet<string>();
+try
+{
+    foreach (var c in chosen)
+    {
+        Console.WriteLine($"=== {c.Id} [{c.Feature}] {c.Title}");
+        var clock = Stopwatch.StartNew();
+
+        if (brokenSetups.Contains(c.Setup))
+        {
+            results.Add((c, false, clock.Elapsed, $"not run: setup {c.Setup} failed"));
+            continue;
+        }
+
+        if (ready != c.Setup || c.Fresh)
+        {
+            Scenario.CloseApp(app);
+            var setupRun = RunOf(setups.First(s => s.Name == c.Setup).Type)
+                           ?? throw new InvalidOperationException($"setup {c.Setup} has no Run method.");
+            var setUp = await Scenario.RunStepsAsync(session, $"setup {c.Setup}",
+                                                     Path.Combine(folder, "results", "setup-" + c.Setup), setupRun);
+            if (!setUp)
+            {
+                ready = null;
+                brokenSetups.Add(c.Setup);
+                results.Add((c, false, clock.Elapsed, $"not run: setup {c.Setup} failed"));
+                continue;
+            }
+            ready = c.Setup;
+        }
+
+        var caseRun = RunOf(coded.First(k => k.Id == c.Id).Type)
+                      ?? throw new InvalidOperationException($"{c.Id} has no Run method.");
+        var passed = await Scenario.RunStepsAsync(session, c.Id, Path.Combine(folder, "results", c.Id), caseRun);
+
+        // A failed case can leave the app anywhere, so the next case starts from a fresh setup.
+        if (!passed)
+            ready = null;
+        results.Add((c, passed, clock.Elapsed, ""));
+    }
+}
+finally
+{
+    Scenario.CloseApp(app);
 }
 
 Console.WriteLine();
-Console.WriteLine("id    result  time    feature / title");
-foreach (var (c, passed, took) in results)
-    Console.WriteLine($"{c.Id,-5} {(passed ? "PASS" : "FAIL"),-6}  {took.TotalSeconds,5:F1}s  {c.Feature} / {c.Title}");
+Console.WriteLine("id    result  time    setup / feature / title");
+foreach (var (c, passed, took, note) in results)
+{
+    var line = $"{c.Id,-5} {(passed ? "PASS" : "FAIL"),-6}  {took.TotalSeconds,5:F1}s  {c.Setup} / {c.Feature} / {c.Title}";
+    Console.WriteLine(note.Length == 0 ? line : $"{line}  ({note})");
+}
 Console.WriteLine($"{results.Count(r => r.Passed)} of {results.Count} passed. Recordings and failure screenshots: {Path.Combine(folder, "results")}");
 
 return results.All(r => r.Passed) ? 0 : 1;
 
-// The case's steps as a delegate, or null when the class has no public static Task Run(Session).
+// The steps of a case or setup as a delegate, or null when the class has no public static Task Run(Session).
 static Func<Session, Task>? RunOf(Type type)
 {
     var method = type.GetMethod("Run", BindingFlags.Public | BindingFlags.Static, [typeof(Session)]);
@@ -136,5 +215,7 @@ public sealed class CaseEntry
     public string Feature { get; set; } = "";
     public string Title { get; set; } = "";
     public string File { get; set; } = "";
+    public string Setup { get; set; } = "";
+    public bool Fresh { get; set; }
     public List<string> Checks { get; set; } = [];
 }

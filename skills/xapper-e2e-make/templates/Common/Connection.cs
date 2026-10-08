@@ -10,13 +10,13 @@ namespace E2E.Common;
 public sealed class Connection
 {
     private readonly McpClient _client;
-    private readonly string _caseId;
+    private readonly Session _owner;
     private readonly string _name;
 
-    internal Connection(McpClient client, string caseId, string name)
+    internal Connection(McpClient client, Session owner, string name)
     {
         _client = client;
-        _caseId = caseId;
+        _owner = owner;
         _name = name;
     }
 
@@ -38,7 +38,7 @@ public sealed class Connection
                     ?? new Dictionary<string, object?>();
         var result = await _client.CallToolAsync(tool, given);
         var text = string.Join("\n", result.Content.OfType<TextContentBlock>().Select(b => b.Text));
-        Console.WriteLine($"[{_caseId}] {_name} {tool}: {text.Split('\n')[0]}");
+        Console.WriteLine($"[{_owner.Label}] {_name} {tool}: {text.Split('\n')[0]}");
         return (text, result.IsError == true);
     }
 }
