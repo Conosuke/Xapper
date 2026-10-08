@@ -65,8 +65,8 @@ If the project has no `e2e/` folder yet, copy this skill's `templates/` into it 
 do not rewrite the shared code from memory; the templates are what has been built and run.
 
 - `E2E.csproj` is the one project in the folder: a console app that builds every case in `Cases/`,
-  every setup in `Setups/` and the shared code in `Common/`. Set its `TargetFramework` to the app's own, without `-windows`
-  (`net8.0-windows` -> `net8.0`). If the app targets below .NET 8, or targets .NET Framework
+  every setup in `Setups/` and the shared code in `Common/`. Set its `TargetFramework` to the
+  app's own, without `-windows` (`net8.0-windows` -> `net8.0`). If the app targets below .NET 8, or targets .NET Framework
   (`net4x`), leave it at `net8.0` - this project never references the app, it only talks to it
   through MCP, so it does not need to match exactly.
 - Keep `Directory.Build.props`, `Directory.Build.targets` and `Directory.Packages.props` as they
@@ -104,10 +104,11 @@ Decide what belongs in a setup from the flows themselves, for this app:
 
 Because cases share the running app, write each case to start from the state its setup leaves and
 to leave that state behind when it passes: close what it opened, go back to where it started. A case
-that changes something the cases after it rely on - deletes or edits shared data, changes settings -
-gets `"fresh": true`, and the runner runs its setup again before it. After a case fails, the runner
-closes the app and runs the setup again before the next case, since a failed case can leave the app
-anywhere. A setup that fails is reported once, and its cases are marked not run.
+that cannot undo what it changes - it deletes or edits data the cases after it rely on, or changes a
+setting - gets `"resetAfter": true` in `cases.json`: once it ends, the runner closes the app and runs
+the setup again before the next case. Mark the case that makes the change, not the ones after it.
+After a case fails, the runner does the same, since a failed case can leave the app anywhere. A
+setup that fails is reported once, and its cases are marked not run.
 
 A setup looks like this:
 

@@ -46,14 +46,14 @@ dotnet run --project e2e -- C02 C05   # only these
 Before running anything, the runner checks that `cases.json` and the cases in code agree: no
 duplicate ids, no case listed without a matching `[Case("Cxx")]` class or the other way around, no
 listed file that is missing or whose name does not start with its id, no file in `Cases/` named
-like a case but left out of `cases.json`, no class without a `Run` method, no case naming a setup
-that does not exist, no setup name used twice, no unknown id given on the command line. If any of
-that disagrees, nothing runs.
+like a case but left out of `cases.json`, no case or setup class without a `Run` method, no case
+naming a setup that does not exist, no setup name used twice, no unknown id given on the command
+line. If any of that disagrees, nothing runs. That is a problem with the e2e folder, not with the
+app; report it.
 
 Cases run grouped by setup, in their `cases.json` order within a group; a single case still runs
-its setup first. After a case fails, the runner closes the app and runs the setup again before the
-next case, and it does the same before a case marked `"fresh"`. That is a problem with the e2e folder, not with the
-app; report it.
+its setup first. After a case fails, and after a case marked `"resetAfter"`, the runner closes the
+app and runs the setup again before the next case.
 
 ## 4. Read the result
 
@@ -80,7 +80,7 @@ these things; say which you think it is and why:
 - **The app changed on purpose** - a renamed control or a new step. The case or its setup needs
   updating: offer to do it with the xapper-e2e-make skill, naming the case or the setup.
 - **A case before it left the app in a different state** - the case passes when run alone
-  (`-- C05`) but fails after others. The earlier case does not put back what it changed: offer to
-  fix that case, or to mark it `"fresh"`, with the xapper-e2e-make skill.
+  (`-- C05`) but fails after others. An earlier case does not put back what it changed: offer to
+  fix that case so it does, or to mark it `"resetAfter"`, with the xapper-e2e-make skill.
 - **The run environment** - ffmpeg missing, a variable unset, a locked desktop, another instance
   running. Fix it with the person and run again.
