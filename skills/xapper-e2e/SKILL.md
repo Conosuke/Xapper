@@ -43,8 +43,9 @@ dotnet run --project e2e -- C02 C05   # only these
 
 Before running anything, the runner checks that `cases.json` and the cases in code agree: no
 duplicate ids, no case listed without a matching `[Case("Cxx")]` class or the other way around, no
-listed file that is missing, no class without a `Run` method, no unknown id given on the command
-line. If any of that disagrees, nothing runs. That is a problem with the e2e folder, not with the
+listed file that is missing or whose name does not start with its id, no file in `Cases/` named
+like a case but left out of `cases.json`, no class without a `Run` method, no unknown id given on
+the command line. If any of that disagrees, nothing runs. That is a problem with the e2e folder, not with the
 app; report it.
 
 ## 4. Read the result
