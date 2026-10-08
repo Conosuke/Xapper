@@ -299,7 +299,7 @@ AI 에이전트가 자동으로 수행하는 흐름:
 4. xapper_find "UsernameInput" → 입력 필드 ref 획득
 5. xapper_type {ref, "admin"}  → 텍스트 입력
 6. xapper_click {loginRef}     → 로그인 버튼 클릭
-7. xapper_assert {statusRef, "Text", "contains", "Welcome"}
+7. xapper_assert {statusRef, "Text", "Welcome, admin!"}
                                → 결과 검증 (PASS/FAIL)
 ```
 
@@ -327,7 +327,7 @@ AI 에이전트가 자동으로 수행하는 흐름:
 | `xapper_get_property` | 속성 읽기 | `ref`, `propertyName` |
 | `xapper_get_bindings` | 바인딩 조회 | `ref` |
 | `xapper_screenshot` | 스크린샷 (이미지 반환) | `ref`, `maxWidth`, `savePath`, `mode` (모두 선택) |
-| `xapper_assert` | 값 단언 | `ref`, `propertyName`, `operator`, `expected` |
+| `xapper_assert` | 값 단언 (대소문자를 가리지 않는 문자열 일치, 기다리지 않음) | `ref` 또는 `target`, `property`, `expected` |
 | `xapper_batch` | 여러 단계를 한 호출에 (첫 실패에서 중단, 단계별 결과) | `steps` (`{"tool", ...}` 배열, 최대 50) |
 | `xapper_record_start` | 데스크톱 녹화 시작 (무인 머신용) | `path` (절대 경로 .mp4), `fps`(선택) |
 | `xapper_record_stop` | 녹화 종료와 파일 마무리 | - |
