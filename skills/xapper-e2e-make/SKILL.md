@@ -39,10 +39,12 @@ do not rewrite the shared code from memory; the templates are what has been buil
   (`net8.0-windows` -> `net8.0`). If the app targets below .NET 8, or targets .NET Framework
   (`net4x`), leave it at `net8.0` - this project never references the app, it only talks to it
   through MCP, so it does not need to match exactly.
-- `Directory.Build.props`, `Directory.Build.targets` and `Directory.Packages.props` stay as they
-  are, even though they are empty: MSBuild uses the nearest one of each and stops looking, so these
-  keep the app repository's own build settings - target framework, WPF, central package versions -
-  from leaking into the E2E project. Do not delete them.
+- Keep `Directory.Build.props`, `Directory.Build.targets` and `Directory.Packages.props` as they
+  are. The first two are empty on purpose: MSBuild uses the nearest one of each and stops looking,
+  so the app repository's own build settings - target framework, WPF, analyzers - stay out of the
+  E2E project. `Directory.Packages.props` is not empty: it sets `ManagePackageVersionsCentrally` to
+  false, so central package management in the app repository cannot override the versions in
+  `E2E.csproj`. Emptying or deleting any of them breaks the build in some repositories.
 - Copy `e2e.env.example` to `e2e.env` and fill in this machine's values. `${E2E}` in a value stands
   for the e2e folder. A variable already set in the environment wins over the file.
 - Make sure the project's `.gitignore` keeps out what a run produces and what a build leaves behind:
@@ -55,7 +57,8 @@ part of the app.
 ## 4. Register the case and write its file
 
 Take the next id after the highest one ever listed; an id is never reused, even after its case is
-deleted. Add the entry to `cases.json`:
+deleted. A deleted case leaves no trace in `cases.json`, so check its history too
+(`git log -p -- e2e/cases.json`) before settling on the next id. Add the entry to `cases.json`:
 
 ```jsonc
 {
@@ -115,8 +118,8 @@ The rules that keep a case honest and repeatable:
   timeout. The `xapper_assert` tool itself does not wait. A fixed sleep is too short on a slow
   machine and wasted on a fast one.
 - Separate calls are fine here. Batching saves conversation turns, and a case has none.
-- Leave launching, recording and clean-up to the runner. Do not close the app or stop the recording
-  inside the steps.
+- The case launches the app itself, as its first step. Leave recording and clean-up to the runner:
+  do not close the app or stop the recording inside the steps.
 
 ## 5. Run it once
 
