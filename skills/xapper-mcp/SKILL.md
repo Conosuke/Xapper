@@ -1,6 +1,6 @@
 ---
-name: xapper
-description: Use when something has to be checked in a running WPF desktop application rather than in code or tests - launching the app, clicking and typing in it, reading what a screen holds, or confirming that a change behaves as intended, or turning a flow that works into an E2E test scenario that runs without AI. Also "방금 작성한 코드 잘 돌아가는지 실제로 확인해줘", "앱 띄워서 확인해줘", "화면에서 직접 눌러봐", "UI 동작 확인해줘", "실제로 되는지 테스트해줘", "이 흐름 E2E 테스트로 남겨줘", "E2E 시나리오 만들어줘".
+name: xapper-mcp
+description: Use when something has to be checked in a running WPF desktop application rather than in code or tests - launching the app, clicking and typing in it, reading what a screen holds, or confirming that a change behaves as intended. Also "방금 작성한 코드 잘 돌아가는지 실제로 확인해줘", "앱 띄워서 확인해줘", "화면에서 직접 눌러봐", "UI 동작 확인해줘", "실제로 되는지 테스트해줘".
 ---
 
 # Driving a WPF app with Xapper
@@ -214,137 +214,11 @@ Two properties make the record durable, and both are worth knowing:
 - A rebuilt app produces new structures and therefore new keys, so stale records stop matching
   rather than answering wrongly. Use `xapper_screen_forget` after a redesign you want re-learned.
 
-## 6. Turn a settled flow into an E2E scenario
+## Keeping a flow as a test
 
-Once a flow works and you know every step it takes - or the person asks for an end-to-end test -
-write it down as a scenario that runs without you. A CI machine then replays it on every build and
-no tokens are spent. The scenario is the tool calls you made, minus the trial and error: a C# file
-that starts the Xapper MCP server itself and calls its tools the way you did.
-
-**Check the outcome by more than the screen.** What the screen shows is what the app drew, not what
-it stored. If the app or its environment offers another way to read the result - an MCP server of its
-own, a command-line tool, the files, database or log it writes - call it in the same scenario after
-the UI steps and assert on what it returns. A scenario that only reads the screen passes on a UI that
-looks right over data that is wrong. Start any other MCP server the same way as Xapper, from its own
-environment variable. The sample below does exactly that, through a second MCP server the app under
-test ships.
-
-The rules that keep a scenario honest and repeatable:
-
-- One scenario is one `.cs` file, run with `dotnet run <file>.cs` (.NET 10 SDK). The first line,
-  `#:package ModelContextProtocol@1.2.0`, brings in the MCP client, and `#:property PublishAot=false`
-  turns off the native-AOT default of file-based apps, whose trimming analyzer would otherwise warn
-  about the reflection in the helper; there is no project file.
-- Start Xapper from the path in `XAPPER_MCP`, and the app from a path in another variable. Never
-  write one machine's paths into the file.
-- End the run at the first call whose result has `IsError`. Xapper marks every failed call that way -
-  a refused action, a failed assert, a script that failed, a batch that stopped early - so the
-  scenario never has to read the text to decide.
-- Target by selector, not by ref. Refs are renumbered on every run.
-- Separate calls are fine here. Batching saves conversation turns, and a script has none.
-- When a step has to wait for the app, wait inside `xapper_run` with `waitUntil` or `assert`'s
-  timeout. A fixed sleep is either too short on a slow machine or wasted on a fast one.
-- Record the run: `xapper_record_start` first, `xapper_record_stop` last. On failure, save a
-  screenshot before stopping, taken with `mode="screen"` - a failing step often leaves a dialog or
-  popup that render mode does not include.
-- Pass or fail, stop the recording and close the app you launched, then exit 0 for pass and 1 for
-  a failed step. An app left running spoils the next scenario. If the Xapper server itself cannot
-  start, nothing was recorded or launched yet, and the run ends with an unhandled error and a
-  non-zero code that a CI step treats as a failure all the same.
-- Put everything a run produces under `e2e-results/<scenario-name>/`.
-- Run one instance of the app under test at a time. A way of checking the outcome that does not
-  tell instances apart may read the wrong one.
-
-```csharp
-#:package ModelContextProtocol@1.2.0
-#:property PublishAot=false
-using System.Diagnostics;
-using ModelContextProtocol.Client;
-using ModelContextProtocol.Protocol;
-
-const string Name = "filter-shows-drafts";
-var app = Environment.GetEnvironmentVariable("APP_EXE");
-var server = Environment.GetEnvironmentVariable("XAPPER_MCP");
-var appMcp = Environment.GetEnvironmentVariable("APP_MCP");
-if (app is null || server is null || appMcp is null)
-{
-    Console.Error.WriteLine("Set APP_EXE, XAPPER_MCP and APP_MCP.");
-    return 1;
-}
-var output = Path.GetFullPath(Path.Combine("e2e-results", Name));
-Directory.CreateDirectory(output);
-
-await using var xapper = await McpClient.CreateAsync(
-    new StdioClientTransport(new() { Name = "xapper", Command = server }));
-
-async Task<string> Call(string tool, object? args = null)
-{
-    var given = args?.GetType().GetProperties().ToDictionary(p => p.Name, p => p.GetValue(args))
-                ?? new Dictionary<string, object?>();
-    var result = await xapper.CallToolAsync(tool, given);
-    var text = string.Join("\n", result.Content.OfType<TextContentBlock>().Select(b => b.Text));
-    Console.WriteLine($"{tool}: {text.Split('\n')[0]}");
-    if (result.IsError == true)
-        throw new InvalidOperationException($"{tool} failed: {text}");
-    return text;
-}
-
-var exitCode = 0;
-try
-{
-    await Call("xapper_record_start", new { path = Path.Combine(output, "run.mp4") });
-
-    await Call("xapper_launch", new { exePath = app });
-
-    await Call("xapper_type", new { target = "name=FilterBox", text = "draft" });
-    await Call("xapper_key", new { key = "Enter" });
-    await Call("xapper_run", new { script = "xapper.assert('name=ResultCount', 'Text', '3', { timeout: 5000 })" });
-
-    // The screen shows what the app drew, not what it stored: read the result through the app's
-    // own means as well. Here that is an MCP server the app ships; use its real tool and arguments.
-    await using var appServer = await McpClient.CreateAsync(
-        new StdioClientTransport(new() { Name = "app", Command = appMcp }));
-    var stored = await appServer.CallToolAsync("list_items",
-        new Dictionary<string, object?> { ["filter"] = "draft" });
-    var storedText = string.Join("\n", stored.Content.OfType<TextContentBlock>().Select(b => b.Text));
-    if (stored.IsError == true || !storedText.Contains("draft"))
-        throw new InvalidOperationException($"the app's own record does not match the screen: {storedText}");
-}
-catch (Exception ex)
-{
-    exitCode = 1;
-    Console.Error.WriteLine(ex.Message);
-    await xapper.CallToolAsync("xapper_screenshot",
-        new Dictionary<string, object?> { ["savePath"] = Path.Combine(output, "failure.png"), ["mode"] = "screen" });
-}
-finally
-{
-    await xapper.CallToolAsync("xapper_record_stop", new Dictionary<string, object?>());
-    // Close every instance by name: launch can start the app and still report an error, and then
-    // there is no pid to go by. The one-instance rule makes this safe.
-    foreach (var leftover in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(app)))
-    {
-        try { leftover.Kill(); }
-        catch (InvalidOperationException) { } // it exited between being listed and being killed
-    }
-}
-return exitCode;
-```
-
-Set up the rest for the project you are in: where the scenarios live, a script that runs them all and
-fails when any fails, and the CI step that calls it and keeps `e2e-results` as an artifact. The machine
-that runs them needs a logged-in desktop session (a WPF window draws nothing without one, so a CI agent
-running as a Windows service fails), the .NET 10 SDK, ffmpeg on `PATH` for the recording, `XAPPER_MCP`,
-and the built app. That session also has to stay unlocked with no screen saver kicking in - a locked
-desktop stops both the recording and WPF input. Recording captures the whole desktop, which is why it
-belongs on unattended machines.
-
-**ffmpeg.** When `xapper_record_start` says ffmpeg was not found, it has to be installed on the machine
-that runs the scenarios - `winget install Gyan.FFmpeg`, then `ffmpeg -version` in a new shell to confirm.
-Installing software changes the person's machine, so give them the command or ask before running it. A
-server that was already running does not see the new `PATH`: it keeps the one it started with. After
-installing, restart whatever starts the Xapper server - for an agent session, a new session - or every
-call keeps failing as if nothing had been installed.
+When a flow works and should keep working - or the person asks for an end-to-end test - the
+xapper-e2e-make skill turns it into a case that runs without an agent. Running cases that already
+exist is the xapper-e2e skill.
 
 ## What the measurements show
 
