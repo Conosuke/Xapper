@@ -114,6 +114,7 @@ public sealed class ScreenRecorder : IAsyncDisposable
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardInput = true,
+                RedirectStandardOutput = true,
                 RedirectStandardError = true
             };
             foreach (var argument in Arguments(path, fps))
@@ -125,15 +126,29 @@ public sealed class ScreenRecorder : IAsyncDisposable
             if (Process.Start(info) is not { } process)
                 return $"Error: ffmpeg at {exe} did not start.";
 
+            // stdout 을 비우지 않으면 자식 프로세스가 이 서버의 표준출력을 그대로 물려받는데, 그것은 MCP stdio
+            // JSON-RPC 채널이다. ffmpeg 가 그 채널에 바이트 하나라도 쓰면 프로토콜이 깨지므로, 읽어서 버린다.
+            process.OutputDataReceived += (_, _) => { };
             process.ErrorDataReceived += (_, e) => Remember(e.Data);
+            process.BeginOutputReadLine();
             process.BeginErrorReadLine();
 
-            await Task.Delay(StartCheckMs, ct);
-            if (process.HasExited)
+            try
             {
-                var code = process.ExitCode;
+                await Task.Delay(StartCheckMs, ct);
+                if (process.HasExited)
+                {
+                    var code = process.ExitCode;
+                    process.Dispose();
+                    return $"Error: ffmpeg stopped right away (exit code {code}), so nothing is being recorded: {Tail()}";
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // 취소됐다고 ffmpeg 를 그냥 두면 저장도, 참조도 안 된 채 떠돈다. 죽이고 치운 뒤 취소를 그대로 올린다.
+                process.Kill(entireProcessTree: true);
                 process.Dispose();
-                return $"Error: ffmpeg stopped right away (exit code {code}), so nothing is being recorded: {Tail()}";
+                throw;
             }
 
             _ffmpeg = process;
@@ -161,11 +176,19 @@ public sealed class ScreenRecorder : IAsyncDisposable
                 return "Error: nothing is being recorded. Call xapper_record_start first.";
 
             clock.Stop();
-            var graceful = await EndAsync(process, ct);
-            process.Dispose();
-            _ffmpeg = null;
-            _path = null;
-            _clock = null;
+            bool graceful;
+            try
+            {
+                graceful = await EndAsync(process, ct);
+            }
+            finally
+            {
+                // EndAsync 가 예외로 끝나도 녹화기가 "이미 녹화 중"인 채로 영영 멈추지 않도록, 정리는 항상 한다.
+                process.Dispose();
+                _ffmpeg = null;
+                _path = null;
+                _clock = null;
+            }
 
             if (!File.Exists(path))
                 return $"Error: ffmpeg ended but {path} was not written: {Tail()}";
@@ -182,12 +205,13 @@ public sealed class ScreenRecorder : IAsyncDisposable
         }
     }
 
-    /// <summary>녹화 중이면 멈춰 파일을 마무리합니다. 서버가 정상 종료될 때 DI 컨테이너가 부른다.</summary>
+    /// <summary>
+    /// 녹화 중이면 멈춰 파일을 마무리합니다. 녹화 중이 아니면 <see cref="StopAsync"/> 가 싸게 오류 문장만 돌려주고
+    /// 끝나므로, 항상 그대로 부른다. 서버가 정상 종료될 때 DI 컨테이너가 부른다.
+    /// </summary>
     public async ValueTask DisposeAsync()
     {
-        if (_ffmpeg is not null)
-            await StopAsync(CancellationToken.None);
-        _gate.Dispose();
+        await StopAsync(CancellationToken.None);
     }
 
     #endregion
@@ -216,7 +240,7 @@ public sealed class ScreenRecorder : IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
-            process.Kill();
+            process.Kill(entireProcessTree: true);
             await process.WaitForExitAsync(CancellationToken.None);
             return false;
         }
