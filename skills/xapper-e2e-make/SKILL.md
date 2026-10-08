@@ -23,11 +23,40 @@ checks. Then ask which they want:
 If nothing overlaps but the feature has other cases, list them anyway, so the person sees what is
 already tested. When the person names a case ("fix C02"), skip this step and change that case.
 
-## 2. Settle the flow by driving the app
+## 2. Settle the flow
 
-Work the flow out live with Xapper first, following the xapper-mcp skill: find the controls, act,
-and read the results until every step is known and the outcome is what it should be. Note which
-selectors worked; a case cannot use refs, because refs are renumbered on every run.
+A case is only as good as the steps it replays, so every step has to be one that has actually
+worked. Where those steps come from depends on what this conversation already holds.
+
+**If the flow was already driven in this conversation**, do not decide on your own. Gather the calls
+that belong to it - in order, only the ones that succeeded, leaving out trial and error and calls
+made just to look - and ask the person:
+
+> I already did this in our conversation: (the steps, one line each, and what showed it worked).
+> Shall I write the case from that, or drive the flow again from the start and write it from the
+> new run?
+
+Say what bears on the choice: how many of those steps used refs and must be turned into selectors,
+and anything that may have changed since - the app rebuilt, data edited, a step that only worked
+on a second try.
+
+- **From the conversation:** turn every ref into a selector, using the `name` or `id` the find or
+  snapshot response showed for it, or the selector a screen record lists for it. A step whose place
+  came from an anchor (`in X at a,b`) has no selector of its own: write it as `target = "X"` with
+  `x = a` and `y = b` as separate arguments, never as one string. A step you cannot pin down either
+  way is driven again on its own; do not guess. Then show the person the final steps and what the
+  case will assert - on screen and beyond it - and once they agree, write it (sections 3 and 4).
+- **From the start:** drive the flow as below and write the case from the new run.
+
+If only part of the flow was driven - it stopped halfway, or its outcome was never confirmed - say
+so when you ask, and offer a third choice: keep the steps that worked and drive only the rest live.
+
+**Otherwise**, work the flow out live with Xapper, following the xapper-mcp skill: find the
+controls, act, and read the results until every step is known and the outcome is what it should
+be. Note which selectors worked; a case cannot use refs, because refs are renumbered on every run.
+
+Either way, a case is not finished until it passes on its own run (section 5) - a flow that worked
+in the conversation is not proof that the written case does.
 
 ## 3. Set up the e2e folder, once per project
 
