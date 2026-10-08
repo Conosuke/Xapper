@@ -5,7 +5,7 @@
   //
   // Every case names a setup - a class in Setups/ marked [Setup("name")] that launches the app and does
   // what the case needs first. The runner runs a setup once and then every case that names it in the
-  // same running app; it sets up again after a failed case, and before a case marked "fresh".
+  // same running app; it sets up again after a failed case, and after a case marked "resetAfter".
   //
   // {
   //   "id": "C01",
@@ -13,7 +13,7 @@
   //   "title": "The main window opens ready to use",
   //   "file": "C01-main-window-opens.cs",
   //   "setup": "app-started",                  // the setup it starts from
-  //   "fresh": false,                          // true when the case changes state the cases after it rely on
+  //   "resetAfter": false,                     // true when the case leaves the app changed in a way it cannot undo
   //   "checks": ["screen: the main window shows its start page"]   // what passing proves; screen checks and other checks apart
   // }
   "cases": []

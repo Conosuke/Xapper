@@ -1,7 +1,7 @@
 // Runs this app's E2E cases: every case in cases.json, or only the ids given as arguments
 // (dotnet run --project e2e -- C02 C05). Nothing runs unless cases.json and the code agree.
 // Each case names a setup; the runner runs a setup once and then every case that names it in the same
-// running app, sets up again after a failed case or before a case marked "fresh", and closes the app at the end.
+// running app, sets up again after a failed case and after a case marked "resetAfter", and closes the app at the end.
 using System.Diagnostics;
 using System.Reflection;
 using System.Text.Json;
@@ -150,7 +150,7 @@ try
             continue;
         }
 
-        if (ready != c.Setup || c.Fresh)
+        if (ready != c.Setup)
         {
             Scenario.CloseApp(app);
             var setupRun = RunOf(setups.First(s => s.Name == c.Setup).Type)
@@ -171,8 +171,9 @@ try
                       ?? throw new InvalidOperationException($"{c.Id} has no Run method.");
         var passed = await Scenario.RunStepsAsync(session, c.Id, Path.Combine(folder, "results", c.Id), caseRun);
 
-        // A failed case can leave the app anywhere, so the next case starts from a fresh setup.
-        if (!passed)
+        // A failed case can leave the app anywhere, and a case marked resetAfter leaves it changed on purpose,
+        // so the next case starts from a fresh setup.
+        if (!passed || c.ResetAfter)
             ready = null;
         results.Add((c, passed, clock.Elapsed, ""));
     }
@@ -216,6 +217,6 @@ public sealed class CaseEntry
     public string Title { get; set; } = "";
     public string File { get; set; } = "";
     public string Setup { get; set; } = "";
-    public bool Fresh { get; set; }
+    public bool ResetAfter { get; set; }
     public List<string> Checks { get; set; } = [];
 }
