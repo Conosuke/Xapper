@@ -1,6 +1,6 @@
 ---
 name: xapper
-description: Use when something has to be checked in a running WPF desktop application rather than in code or tests - launching the app, clicking and typing in it, reading what a screen holds, or confirming that a change behaves as intended. Also "방금 작성한 코드 잘 돌아가는지 실제로 확인해줘", "앱 띄워서 확인해줘", "화면에서 직접 눌러봐", "UI 동작 확인해줘", "실제로 되는지 테스트해줘".
+description: Use when something has to be checked in a running WPF desktop application rather than in code or tests - launching the app, clicking and typing in it, reading what a screen holds, or confirming that a change behaves as intended, or turning a flow that works into an E2E test scenario that runs without AI. Also "방금 작성한 코드 잘 돌아가는지 실제로 확인해줘", "앱 띄워서 확인해줘", "화면에서 직접 눌러봐", "UI 동작 확인해줘", "실제로 되는지 테스트해줘", "이 흐름 E2E 테스트로 남겨줘", "E2E 시나리오 만들어줘".
 ---
 
 # Driving a WPF app with Xapper
@@ -245,7 +245,8 @@ The rules that keep a scenario honest and repeatable:
 - When a step has to wait for the app, wait inside `xapper_run` with `waitUntil` or `assert`'s
   timeout. A fixed sleep is either too short on a slow machine or wasted on a fast one.
 - Record the run: `xapper_record_start` first, `xapper_record_stop` last. On failure, save a
-  screenshot before stopping.
+  screenshot before stopping, taken with `mode="screen"` - a failing step often leaves a dialog or
+  popup that render mode does not include.
 - Pass or fail, stop the recording and close the app you launched, then exit 0 for pass and 1 for
   a failed step. An app left running spoils the next scenario. If the Xapper server itself cannot
   start, nothing was recorded or launched yet, and the run ends with an unhandled error and a
@@ -258,7 +259,6 @@ The rules that keep a scenario honest and repeatable:
 #:package ModelContextProtocol@1.2.0
 #:property PublishAot=false
 using System.Diagnostics;
-using System.Text.RegularExpressions;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
@@ -289,18 +289,16 @@ async Task<string> Call(string tool, object? args = null)
     return text;
 }
 
-int? pid = null;
 var exitCode = 0;
 try
 {
     await Call("xapper_record_start", new { path = Path.Combine(output, "run.mp4") });
 
-    var launched = await Call("xapper_launch", new { exePath = app });
-    pid = int.Parse(Regex.Match(launched, @"process (\d+)").Groups[1].Value);
+    await Call("xapper_launch", new { exePath = app });
 
     await Call("xapper_type", new { target = "name=FilterBox", text = "draft" });
     await Call("xapper_key", new { key = "Enter" });
-    await Call("xapper_assert", new { target = "name=ResultCount", property = "Text", expected = "3" });
+    await Call("xapper_run", new { script = "xapper.assert('name=ResultCount', 'Text', '3', { timeout: 5000 })" });
 
     // The screen shows what the app drew, not what it stored: read the result through the app's
     // own means as well. Here that is an MCP server the app ships; use its real tool and arguments.
@@ -317,16 +315,15 @@ catch (Exception ex)
     exitCode = 1;
     Console.Error.WriteLine(ex.Message);
     await xapper.CallToolAsync("xapper_screenshot",
-        new Dictionary<string, object?> { ["savePath"] = Path.Combine(output, "failure.png") });
+        new Dictionary<string, object?> { ["savePath"] = Path.Combine(output, "failure.png"), ["mode"] = "screen" });
 }
 finally
 {
     await xapper.CallToolAsync("xapper_record_stop", new Dictionary<string, object?>());
-    if (pid is int id)
-    {
-        try { Process.GetProcessById(id).Kill(); }
-        catch (ArgumentException) { } // already gone: the app closed itself or crashed
-    }
+    // Close every instance by name: launch can start the app and still report an error, and then
+    // there is no pid to go by. The one-instance rule makes this safe.
+    foreach (var leftover in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(app)))
+        leftover.Kill();
 }
 return exitCode;
 ```
@@ -335,7 +332,9 @@ Set up the rest for the project you are in: where the scenarios live, a script t
 fails when any fails, and the CI step that calls it and keeps `e2e-results` as an artifact. The machine
 that runs them needs a logged-in desktop session (a WPF window draws nothing without one, so a CI agent
 running as a Windows service fails), the .NET 10 SDK, ffmpeg on `PATH` for the recording, `XAPPER_MCP`,
-and the built app. Recording captures the whole desktop, which is why it belongs on unattended machines.
+and the built app. That session also has to stay unlocked with no screen saver kicking in - a locked
+desktop stops both the recording and WPF input. Recording captures the whole desktop, which is why it
+belongs on unattended machines.
 
 **ffmpeg.** When `xapper_record_start` says ffmpeg was not found, it has to be installed on the machine
 that runs the scenarios - `winget install Gyan.FFmpeg`, then `ffmpeg -version` in a new shell to confirm.
