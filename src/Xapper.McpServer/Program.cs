@@ -117,6 +117,9 @@ builder.Services.AddSingleton<ScreenTracker>();
 builder.Services.AddSingleton(new ScreenStore(Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Xapper", "screens.db")));
 
+// 서버가 정상 종료되면 컨테이너가 녹화기를 정리하며 녹화 중인 파일을 마무리한다. 그러려면 팩토리로 등록해야 한다.
+builder.Services.AddSingleton(_ => new ScreenRecorder(ScreenRecorder.FindOnPath));
+
 builder.Services.AddMcpServer(options =>
 {
     options.ServerInfo = new()
@@ -156,7 +159,8 @@ builder.Services.AddMcpServer(options =>
 .WithTools<NoticeTools>()
 .WithTools<RunTools>()
 .WithTools<ScreenTools>()
-.WithTools<EventTools>();
+.WithTools<EventTools>()
+.WithTools<RecordTools>();
 
 var app = builder.Build();
 await app.RunAsync();
