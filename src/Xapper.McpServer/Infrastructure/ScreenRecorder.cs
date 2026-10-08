@@ -176,6 +176,19 @@ public sealed class ScreenRecorder : IAsyncDisposable
                 return "Error: nothing is being recorded. Call xapper_record_start first.";
 
             clock.Stop();
+
+            if (process.HasExited)
+            {
+                var code = process.ExitCode;
+                process.Dispose();
+                _ffmpeg = null;
+                _path = null;
+                _clock = null;
+                return $"Error: ffmpeg stopped on its own before it was asked to (exit code {code}), so {path} " +
+                       $"covers less than the {clock.Elapsed.TotalSeconds:F1} s since the start - a locked desktop, a full disk " +
+                       $"or a display change stops it: {Tail()}";
+            }
+
             bool graceful;
             try
             {
@@ -183,6 +196,18 @@ public sealed class ScreenRecorder : IAsyncDisposable
             }
             finally
             {
+                // 어떤 경로로 여기 오든 ffmpeg 가 살아 있으면 끝낸다. Dispose 는 프로세스를 끝내지 않으므로, 이걸 빼면
+                // 추적하는 쪽이 없는 ffmpeg 가 계속 녹화한다.
+                try
+                {
+                    if (!process.HasExited)
+                        process.Kill(entireProcessTree: true);
+                }
+                catch (InvalidOperationException)
+                {
+                    // 이미 끝났다.
+                }
+
                 // EndAsync 가 예외로 끝나도 녹화기가 "이미 녹화 중"인 채로 영영 멈추지 않도록, 정리는 항상 한다.
                 process.Dispose();
                 _ffmpeg = null;
@@ -224,7 +249,9 @@ public sealed class ScreenRecorder : IAsyncDisposable
         try
         {
             await process.StandardInput.WriteAsync('q');
-            await process.StandardInput.FlushAsync(ct);
+            // 취소된 토큰으로 플러시하면 OperationCanceledException 이 빠져나가 StopAsync 의 finally 가 프로세스를
+            // 죽이지 않고 Dispose 만 하게 된다 - ffmpeg 는 추적하는 쪽 없이 계속 녹화를 돈다. 그래서 여기는 항상 흘려보낸다.
+            await process.StandardInput.FlushAsync(CancellationToken.None);
         }
         catch (IOException)
         {
