@@ -146,7 +146,7 @@ builder.Services.AddMcpServer(options =>
     }
 
     // 실패를 글로만 알리면 MCP 클라이언트는 성공으로 본다. E2E 시나리오는 isError 만 보고 성패를 가리므로 여기서 붙인다.
-    return ToolFailure.Mark(await next(context, ct));
+    return ToolFailure.Mark(await next(context, ct), context.Params?.Name ?? string.Empty);
 }))
 .WithTools<ProcessTools>()
 .WithTools<SnapshotTools>()

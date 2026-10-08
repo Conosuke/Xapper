@@ -21,6 +21,7 @@ public sealed class RecordTools
     /// <summary>
     /// <see cref="RecordTools"/>의 새 인스턴스를 생성합니다.
     /// </summary>
+    /// <param name="recorder">녹화를 실제로 맡는 녹화기.</param>
     public RecordTools(ScreenRecorder recorder)
     {
         _recorder = recorder;

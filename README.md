@@ -182,6 +182,7 @@ Inspector와 GenericInjector DLL은 McpServer에 **임베디드 리소스로 내
 - 담지 못한 것이 있으면 응답이 그 사실을 알린다 — `render`는 열려 있는 다른 창 개수를, `screen`은 앱의 창이 앞에 없다는 사실을
 - `xapper_assert` : 속성 값 단언 (PASS/FAIL 반환)
 - `xapper_batch` : 여러 단계를 한 호출에 순서대로 실행. 각 단계는 `{"tool": "click", ...그 도구의 인자}` 로 적고(click·doubleclick·rightclick·wheel·type·key·select·toggle·expand·scroll·find·get_property·assert), 첫 실패에서 중단하며 단계별 결과를 번호를 붙여 단일 도구와 같은 형식으로 돌려준다
+- 실패한 도구 호출은 MCP 의 `isError` 로 표시된다. 응답 글을 읽지 않아도 성패를 가릴 수 있어서, AI 없이 도는 E2E 시나리오가 이것만 보고 멈춘다
 - `xapper_record_start` / `xapper_record_stop` : ffmpeg 로 데스크톱 전체를 MP4 에 녹화한다. 무인 머신에서 돈 E2E 시나리오를 다시 보기 위한 것이라 모니터 전체를 찍고, 사람이 쓰는 PC 에서는 다른 창도 함께 찍힌다. 조각 MP4 로 써서 실행이 강제로 끝나도 끊긴 지점까지 재생된다. 서버의 PATH 에 ffmpeg 가 있어야 한다
 
 <br/>
