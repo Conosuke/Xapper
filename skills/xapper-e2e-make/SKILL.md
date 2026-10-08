@@ -44,8 +44,9 @@ on a second try.
   snapshot response showed for it, or the selector a screen record lists for it. A step whose place
   came from an anchor (`in X at a,b`) has no selector of its own: write it as `target = "X"` with
   `x = a` and `y = b` as separate arguments, never as one string. A step you cannot pin down either
-  way is driven again on its own; do not guess. Then show the person the final steps and what the
-  case will assert - on screen and beyond it - and once they agree, write it (sections 3 and 4).
+  way is driven again on its own; do not guess. Then show the person the final steps - which of
+  them belong to a setup and which to the case (section 4) - and what the case will assert, on
+  screen and beyond it, and once they agree, write it (sections 3 and 4).
 - **From the start:** drive the flow as below and write the case from the new run.
 
 If only part of the flow was driven - it stopped halfway, or its outcome was never confirmed - say
@@ -63,8 +64,8 @@ in the conversation is not proof that the written case does.
 If the project has no `e2e/` folder yet, copy this skill's `templates/` into it as `e2e/` whole -
 do not rewrite the shared code from memory; the templates are what has been built and run.
 
-- `E2E.csproj` is the one project in the folder: a console app that builds every case in `Cases/`
-  and the shared code in `Common/`. Set its `TargetFramework` to the app's own, without `-windows`
+- `E2E.csproj` is the one project in the folder: a console app that builds every case in `Cases/`,
+  every setup in `Setups/` and the shared code in `Common/`. Set its `TargetFramework` to the app's own, without `-windows`
   (`net8.0-windows` -> `net8.0`). If the app targets below .NET 8, or targets .NET Framework
   (`net4x`), leave it at `net8.0` - this project never references the app, it only talks to it
   through MCP, so it does not need to match exactly.
@@ -83,7 +84,48 @@ do not rewrite the shared code from memory; the templates are what has been buil
 The E2E project does not need to be added to the app's solution - it is run by path, not built as
 part of the app.
 
-## 4. Register the case and write its file
+## 4. Split the setup from the case, then register and write it
+
+**Cases do not launch the app; setups do.** A setup is a static class in `Setups/` marked
+`[Setup("name")]` whose `Run` launches the app and does what its cases need before their own steps.
+Every case names its setup in `cases.json`. The runner runs a setup once and then every case that
+names it, one after another in the same running app - so running the whole suite starts the app
+once per setup, not once per case. The templates ship one setup, `app-started`, that only launches
+the app.
+
+Decide what belongs in a setup from the flows themselves, for this app:
+
+- A step every case of a group would repeat before its own work - launching, and whatever must hold
+  before any of them can start (signing in, opening what they work on, reaching their starting
+  screen) - belongs in a setup, not in each case.
+- Reuse a setup whose steps already match. Extend `app-started` when every case needs the same
+  start; add another setup when only some cases do. Keep one step in one place.
+- What the case checks belongs to the case, even if it begins with the same moves as another case.
+
+Because cases share the running app, write each case to start from the state its setup leaves and
+to leave that state behind when it passes: close what it opened, go back to where it started. A case
+that changes something the cases after it rely on - deletes or edits shared data, changes settings -
+gets `"fresh": true`, and the runner runs its setup again before it. After a case fails, the runner
+closes the app and runs the setup again before the next case, since a failed case can leave the app
+anywhere. A setup that fails is reported once, and its cases are marked not run.
+
+A setup looks like this:
+
+```csharp
+using E2E.Common;
+
+namespace E2E.Setups;
+
+[Setup("app-started")]
+public static class AppStarted
+{
+    public static async Task Run(Session x)
+    {
+        await x.Call("xapper_launch", new { exePath = x.App });
+        // Then whatever every case naming this setup needs before its own steps.
+    }
+}
+```
 
 Take the next id after the highest one ever listed; an id is never reused, even after its case is
 deleted. A deleted case leaves no trace in `cases.json`, so check its history too
@@ -95,6 +137,7 @@ deleted. A deleted case leaves no trace in `cases.json`, so check its history to
   "feature": "search",
   "title": "Typing draft into the filter shows only the three drafts",
   "file": "C02-filter-shows-drafts.cs",
+  "setup": "app-started",
   "checks": [
     "screen: the result count becomes 3",
     "data: the app's own server lists three drafts"
@@ -114,7 +157,7 @@ public static class C02FilterShowsDrafts
 {
     public static async Task Run(Session x)
     {
-        await x.Call("xapper_launch", new { exePath = x.App });
+        // Starts where the setup "app-started" left the app.
         await x.Call("xapper_type", new { target = "name=FilterBox", text = "draft" });
         await x.Call("xapper_key", new { key = "Enter" });
         await x.Call("xapper_run", new { script = "xapper.assert('name=ResultCount', 'Text', '3', { timeout: 5000 })" });
@@ -125,6 +168,10 @@ public static class C02FilterShowsDrafts
         var stored = await app.Call("list_items", new { filter = "draft" });
         if (!stored.Contains("draft"))
             throw new InvalidOperationException($"the app's own record does not match the screen: {stored}");
+
+        // Leave the app as the setup left it, for the case after this one.
+        await x.Call("xapper_type", new { target = "name=FilterBox", text = "" });
+        await x.Call("xapper_key", new { key = "Enter" });
     }
 }
 ```
@@ -147,8 +194,8 @@ The rules that keep a case honest and repeatable:
   timeout. The `xapper_assert` tool itself does not wait. A fixed sleep is too short on a slow
   machine and wasted on a fast one.
 - Separate calls are fine here. Batching saves conversation turns, and a case has none.
-- The case launches the app itself, as its first step. Leave recording and clean-up to the runner:
-  do not close the app or stop the recording inside the steps.
+- A case never launches or closes the app and never stops the recording; its setup and the runner
+  do that.
 
 ## 5. Run it once
 
@@ -157,6 +204,10 @@ Run the new case through the runner and make sure it passes before you hand it o
 ```bash
 dotnet run --project e2e -- C02
 ```
+
+The runner runs the case's setup first, so a single case runs exactly as it does in the full suite.
+Run the whole suite as well when you added a setup or changed one, or when the new case shares a
+setup with others: it must pass after the cases before it and leave the app fit for the ones after.
 
 A case you have not seen pass is not finished. If it fails, read the failing line and the
 screenshot under `e2e/results/C02/`, fix the case, and run it again. The run records the whole
