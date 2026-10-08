@@ -7,12 +7,12 @@ description: Use when a flow in a WPF app driven through Xapper should be kept a
 
 An E2E case is the tool calls you made while driving the app, minus the trial and error, written as
 a C# file a CI machine replays on every build. No tokens are spent when it runs. Each case has an id
-(C01, C02 ...) and an entry in `e2e/cases.yaml` that says what it proves, so a person - or an agent
+(C01, C02 ...) and an entry in `e2e/cases.json` that says what it proves, so a person - or an agent
 asked to "test the search feature" - can pick cases without reading code.
 
 ## 1. Look for a case that already covers it
 
-Read `e2e/cases.yaml` before writing anything. If a case has the same `feature` and its `title` or
+Read `e2e/cases.json` before writing anything. If a case has the same `feature` and its `title` or
 `checks` overlap what you were asked to cover, stop and tell the person: its id, feature, title and
 checks. Then ask which they want:
 
@@ -31,60 +31,74 @@ selectors worked; a case cannot use refs, because refs are renumbered on every r
 
 ## 3. Set up the e2e folder, once per project
 
-If the project has no `e2e/` folder yet, copy this skill's `templates/` into it - `cases.yaml`,
-`run-all.cs` and `common/`. Do not rewrite the shared code from memory; the templates are what has
-been built and run.
+If the project has no `e2e/` folder yet, copy this skill's `templates/` into it as `e2e/` whole -
+do not rewrite the shared code from memory; the templates are what has been built and run.
 
-Then make sure the project's `.gitignore` keeps out what a run produces: `e2e/results/` (recordings
-and screenshots) and `e2e/common/bin/` and `e2e/common/obj/` (the shared project is built in place
-the first time a case runs). Many .NET repositories already ignore every `bin/` and `obj/`; add only
-what is missing.
+- `E2E.csproj` is the one project in the folder: a console app that builds every case in `Cases/`
+  and the shared code in `Common/`. Set its `TargetFramework` to the app's own, without `-windows`
+  (`net8.0-windows` -> `net8.0`). If the app targets below .NET 8, or targets .NET Framework
+  (`net4x`), leave it at `net8.0` - this project never references the app, it only talks to it
+  through MCP, so it does not need to match exactly.
+- `Directory.Build.props`, `Directory.Build.targets` and `Directory.Packages.props` stay as they
+  are, even though they are empty: MSBuild uses the nearest one of each and stops looking, so these
+  keep the app repository's own build settings - target framework, WPF, central package versions -
+  from leaking into the E2E project. Do not delete them.
+- Copy `e2e.env.example` to `e2e.env` and fill in this machine's values. `${E2E}` in a value stands
+  for the e2e folder. A variable already set in the environment wins over the file.
+- Make sure the project's `.gitignore` keeps out what a run produces and what a build leaves behind:
+  `e2e/results/`, `e2e/e2e.env`, `e2e/bin/` and `e2e/obj/`. Many .NET repositories already ignore
+  every `bin/` and `obj/`; add only what is missing.
 
-- `common/` holds what every case shares: checking the environment, connecting to Xapper, the
-  output folder, recording, the failure screenshot, closing the app and the exit code. It is the
-  one real project in the folder and is committed.
-- `run-all.cs` and the case files have no project file. `dotnet run` builds each of them in a
-  temporary project outside the repository, from the `#:` lines at its top, and rebuilds it only
-  when the file changes - so the first run of a case takes a few seconds longer.
-- `run-all.cs` runs the listed cases and refuses to run anything when the list and the files disagree.
+The E2E project does not need to be added to the app's solution - it is run by path, not built as
+part of the app.
 
 ## 4. Register the case and write its file
 
 Take the next id after the highest one ever listed; an id is never reused, even after its case is
-deleted. Add the entry to `cases.yaml`:
+deleted. Add the entry to `cases.json`:
 
-```yaml
-  - id: C02
-    feature: search
-    title: Typing draft into the filter shows only the three drafts
-    file: C02-filter-shows-drafts.cs
-    checks:
-      - "screen: the result count becomes 3"
-      - "data: the app's own server lists three drafts"
+```jsonc
+{
+  "id": "C02",
+  "feature": "search",
+  "title": "Typing draft into the filter shows only the three drafts",
+  "file": "C02-filter-shows-drafts.cs",
+  "checks": [
+    "screen: the result count becomes 3",
+    "data: the app's own server lists three drafts"
+  ]
+}
 ```
 
-Then write the case file, named after its id:
+Then write the case file, named `Cases/<id>-<slug>.cs` after its id:
 
 ```csharp
-#:project common/E2E.Common.csproj
-#:property PublishAot=false
 using E2E.Common;
 
-return await Scenario.RunAsync("C02", async x =>
-{
-    await x.Call("xapper_launch", new { exePath = x.App });
-    await x.Call("xapper_type", new { target = "name=FilterBox", text = "draft" });
-    await x.Call("xapper_key", new { key = "Enter" });
-    await x.Call("xapper_run", new { script = "xapper.assert('name=ResultCount', 'Text', '3', { timeout: 5000 })" });
+namespace E2E.Cases;
 
-    // The screen shows what the app drew, not what it stored. Read the result through the app's own
-    // means as well - here an MCP server it ships, started from APP_MCP; use its real tool and arguments.
-    var app = await x.Connect("APP_MCP");
-    var stored = await app.Call("list_items", new { filter = "draft" });
-    if (!stored.Contains("draft"))
-        throw new InvalidOperationException($"the app's own record does not match the screen: {stored}");
-});
+[Case("C02")]
+public static class C02FilterShowsDrafts
+{
+    public static async Task Run(Session x)
+    {
+        await x.Call("xapper_launch", new { exePath = x.App });
+        await x.Call("xapper_type", new { target = "name=FilterBox", text = "draft" });
+        await x.Call("xapper_key", new { key = "Enter" });
+        await x.Call("xapper_run", new { script = "xapper.assert('name=ResultCount', 'Text', '3', { timeout: 5000 })" });
+
+        // The screen shows what the app drew, not what it stored. Read the result through the app's own
+        // means as well - here an MCP server it ships, started from APP_MCP; use its real tool and arguments.
+        var app = await x.Connect("APP_MCP");
+        var stored = await app.Call("list_items", new { filter = "draft" });
+        if (!stored.Contains("draft"))
+            throw new InvalidOperationException($"the app's own record does not match the screen: {stored}");
+    }
+}
 ```
+
+The file is `e2e/Cases/C02-filter-shows-drafts.cs`. If the case connects to another server
+(`x.Connect("APP_MCP")`), add that variable to `e2e.env.example` too.
 
 The rules that keep a case honest and repeatable:
 
@@ -101,15 +115,15 @@ The rules that keep a case honest and repeatable:
   timeout. The `xapper_assert` tool itself does not wait. A fixed sleep is too short on a slow
   machine and wasted on a fast one.
 - Separate calls are fine here. Batching saves conversation turns, and a case has none.
-- Leave launching, recording and clean-up to `Scenario.RunAsync`. Do not close the app or stop the
-  recording inside the steps.
+- Leave launching, recording and clean-up to the runner. Do not close the app or stop the recording
+  inside the steps.
 
 ## 5. Run it once
 
 Run the new case through the runner and make sure it passes before you hand it over:
 
 ```bash
-dotnet run e2e/run-all.cs -- C02
+dotnet run --project e2e -- C02
 ```
 
 A case you have not seen pass is not finished. If it fails, read the failing line and the
@@ -125,15 +139,16 @@ whatever starts it - for an agent session, a new session - or every run keeps fa
 
 ## 6. CI
 
-To run the cases on every build, add a CI step that runs `dotnet run e2e/run-all.cs` and fails the
+To run the cases on every build, add a CI step that runs `dotnet run --project e2e` and fails the
 build on a non-zero exit, and keep `e2e/results` as an artifact so the recordings and screenshots
 of a failed build can be opened from the CI page. The machine needs:
 
 - a logged-in desktop session that stays unlocked with no screen saver - a WPF window draws nothing
   without one, and a locked desktop stops both the recording and the input, so a CI agent running
   as a Windows service fails;
-- the .NET 10 SDK, ffmpeg on `PATH`, and the built app;
-- `APP_EXE` (the app), `XAPPER_MCP` (the Xapper server) and every variable the cases connect to.
+- the .NET SDK that builds the app (8 or later), ffmpeg on `PATH`, and the built app;
+- `APP_EXE` (the app), `XAPPER_MCP` (the Xapper server) and every variable the cases connect to -
+  pass these as real environment variables and `e2e.env` does not need to exist.
 
 Run one instance of the app at a time. A check that does not tell instances apart may read the
 wrong one, and clean-up closes every instance by name.
