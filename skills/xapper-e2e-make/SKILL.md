@@ -32,11 +32,20 @@ selectors worked; a case cannot use refs, because refs are renumbered on every r
 ## 3. Set up the e2e folder, once per project
 
 If the project has no `e2e/` folder yet, copy this skill's `templates/` into it - `cases.yaml`,
-`run-all.cs` and `common/` - and add `e2e/results/` to the project's `.gitignore`. Do not rewrite
-the shared code from memory; the templates are what has been built and run.
+`run-all.cs` and `common/`. Do not rewrite the shared code from memory; the templates are what has
+been built and run.
+
+Then make sure the project's `.gitignore` keeps out what a run produces: `e2e/results/` (recordings
+and screenshots) and `e2e/common/bin/` and `e2e/common/obj/` (the shared project is built in place
+the first time a case runs). Many .NET repositories already ignore every `bin/` and `obj/`; add only
+what is missing.
 
 - `common/` holds what every case shares: checking the environment, connecting to Xapper, the
-  output folder, recording, the failure screenshot, closing the app and the exit code.
+  output folder, recording, the failure screenshot, closing the app and the exit code. It is the
+  one real project in the folder and is committed.
+- `run-all.cs` and the case files have no project file. `dotnet run` builds each of them in a
+  temporary project outside the repository, from the `#:` lines at its top, and rebuilds it only
+  when the file changes - so the first run of a case takes a few seconds longer.
 - `run-all.cs` runs the listed cases and refuses to run anything when the list and the files disagree.
 
 ## 4. Register the case and write its file
