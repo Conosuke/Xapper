@@ -182,6 +182,7 @@ Inspector와 GenericInjector DLL은 McpServer에 **임베디드 리소스로 내
 - 담지 못한 것이 있으면 응답이 그 사실을 알린다 — `render`는 열려 있는 다른 창 개수를, `screen`은 앱의 창이 앞에 없다는 사실을
 - `xapper_assert` : 속성 값 단언 (PASS/FAIL 반환)
 - `xapper_batch` : 여러 단계를 한 호출에 순서대로 실행. 각 단계는 `{"tool": "click", ...그 도구의 인자}` 로 적고(click·doubleclick·rightclick·wheel·type·key·select·toggle·expand·scroll·find·get_property·assert), 첫 실패에서 중단하며 단계별 결과를 번호를 붙여 단일 도구와 같은 형식으로 돌려준다
+- `xapper_record_start` / `xapper_record_stop` : ffmpeg 로 데스크톱 전체를 MP4 에 녹화한다. 무인 머신에서 돈 E2E 시나리오를 다시 보기 위한 것이라 모니터 전체를 찍고, 사람이 쓰는 PC 에서는 다른 창도 함께 찍힌다. 조각 MP4 로 써서 실행이 강제로 끝나도 끊긴 지점까지 재생된다. 서버의 PATH 에 ffmpeg 가 있어야 한다
 
 <br/>
 
@@ -319,6 +320,8 @@ AI 에이전트가 자동으로 수행하는 흐름:
 | `xapper_screenshot` | 스크린샷 (이미지 반환) | `ref`, `maxWidth`, `savePath`, `mode` (모두 선택) |
 | `xapper_assert` | 값 단언 | `ref`, `propertyName`, `operator`, `expected` |
 | `xapper_batch` | 여러 단계를 한 호출에 (첫 실패에서 중단, 단계별 결과) | `steps` (`{"tool", ...}` 배열, 최대 50) |
+| `xapper_record_start` | 데스크톱 녹화 시작 (무인 머신용) | `path` (절대 경로 .mp4), `fps`(선택) |
+| `xapper_record_stop` | 녹화 종료와 파일 마무리 | - |
 
 <br/>
 
