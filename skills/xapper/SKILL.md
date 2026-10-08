@@ -323,7 +323,10 @@ finally
     // Close every instance by name: launch can start the app and still report an error, and then
     // there is no pid to go by. The one-instance rule makes this safe.
     foreach (var leftover in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(app)))
-        leftover.Kill();
+    {
+        try { leftover.Kill(); }
+        catch (InvalidOperationException) { } // it exited between being listed and being killed
+    }
 }
 return exitCode;
 ```
