@@ -31,7 +31,10 @@ public static class EnvFile
             if (Environment.GetEnvironmentVariable(name) is not null)
                 continue;
 
-            var value = line[(equals + 1)..].Trim().Trim('"').Replace("${E2E}", e2eFolder, StringComparison.Ordinal);
+            var value = line[(equals + 1)..].Trim();
+            if (value.Length >= 2 && value[0] == '"' && value[^1] == '"')
+                value = value[1..^1];
+            value = value.Replace("${E2E}", e2eFolder, StringComparison.Ordinal);
             Environment.SetEnvironmentVariable(name, value);
             set.Add(name);
         }
