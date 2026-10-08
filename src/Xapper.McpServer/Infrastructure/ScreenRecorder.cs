@@ -138,6 +138,8 @@ public sealed class ScreenRecorder : IAsyncDisposable
                 await Task.Delay(StartCheckMs, ct);
                 if (process.HasExited)
                 {
+                    // 인자 없는 WaitForExit 는 비동기로 읽던 출력이 끝날 때까지 기다린다. 그래야 Tail 에 마지막 줄이 담긴다.
+                    process.WaitForExit();
                     var code = process.ExitCode;
                     process.Dispose();
                     return $"Error: ffmpeg stopped right away (exit code {code}), so nothing is being recorded: {Tail()}";
@@ -179,6 +181,8 @@ public sealed class ScreenRecorder : IAsyncDisposable
 
             if (process.HasExited)
             {
+                // 비동기로 읽던 출력이 끝날 때까지 기다려야 Tail 에 ffmpeg 가 남긴 마지막 줄이 담긴다.
+                process.WaitForExit();
                 var code = process.ExitCode;
                 process.Dispose();
                 _ffmpeg = null;
