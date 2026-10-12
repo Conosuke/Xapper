@@ -214,11 +214,26 @@ Two properties make the record durable, and both are worth knowing:
 - A rebuilt app produces new structures and therefore new keys, so stale records stop matching
   rather than answering wrongly. Use `xapper_screen_forget` after a redesign you want re-learned.
 
+## Context-efficient Xapper sessions with subagents
+
+Xapper tool results can accumulate in the calling agent's context, wasting tokens. To avoid this:
+
+- When a main agent needs to run a Xapper flow through xapper-e2e-make, that skill will spawn a
+  subagent with this (xapper-mcp) skill loaded, asking the subagent to:
+  - Complete the flow live (launch, act, verify)
+  - Return only what the main agent needs: the final step list with selectors, outcome verification,
+    and any screen notes that matter
+  - Let the subagent keep all the Xapper call results and screenshots in its own context, which
+    is discarded when it returns
+
+This pattern keeps the main agent's context clean and focused on writing the case itself.
+
 ## Keeping a flow as a test
 
-When a flow works and should keep working - or the person asks for an end-to-end test - the
-xapper-e2e-make skill turns it into a case that runs without an agent. Running cases that already
-exist is the xapper-e2e skill.
+When a flow works and should keep running - or the person asks for an end-to-end test - the
+xapper-e2e-make skill turns it into a case that runs without an agent (using the approach above
+if the flow has not already been driven). Running cases that already exist is the xapper-e2e
+skill.
 
 ## What the measurements show
 

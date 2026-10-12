@@ -52,9 +52,24 @@ on a second try.
 If only part of the flow was driven - it stopped halfway, or its outcome was never confirmed - say
 so when you ask, and offer a third choice: keep the steps that worked and drive only the rest live.
 
-**Otherwise**, work the flow out live with Xapper, following the xapper-mcp skill: find the
-controls, act, and read the results until every step is known and the outcome is what it should
-be. Note which selectors worked; a case cannot use refs, because refs are renumbered on every run.
+**Otherwise**, work the flow out live with Xapper using a subagent to avoid accumulating Xapper
+tool results in this agent's context. Launch a subagent task with:
+
+```
+Agent({
+  description: "Drive WPF app flow with Xapper and return steps",
+  prompt: "Use the xapper-mcp skill to drive this flow: [the flow description]. 
+           Record every successful step as a call with selector (no refs). 
+           When the flow is complete and verified, return ONLY:
+           1. The ordered list of steps, each with: tool name, target selector, arguments
+           2. Outcome verification (what proves it worked)
+           3. Any screen notes worth keeping (gotchas, dialogs that may appear, etc.)
+           Do not return screenshots, full events lists, or intermediate tool results."
+})
+```
+
+Once the subagent returns, extract the step list and outcome. Use those steps to write the case.
+Note which selectors worked; a case cannot use refs, because refs are renumbered on every run.
 
 Either way, a case is not finished until it passes on its own run (section 5) - a flow that worked
 in the conversation is not proof that the written case does.
