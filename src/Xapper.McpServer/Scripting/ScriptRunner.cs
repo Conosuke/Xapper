@@ -71,8 +71,26 @@ internal sealed class ScriptRunner
         var session = new ScriptSession(_send, _processId, _notice, runCt);
         var stopwatch = Stopwatch.StartNew();
 
-        // Jint 는 CPU 바운드라 스레드풀에서 돌린다. 시간 제한은 취소 토큰으로 엔진에 전달한다.
-        return await Task.Run(() => Execute(script, session, runCt, ct, stopwatch), CancellationToken.None);
+        // Jint 는 CPU 바운드라 스레드풀에서 돌린다. 시간 제한은 취소 토큰으로 엔진에 전달하고,
+        // Task.WhenAny 로도 강제 타임아웃을 건다(Jint 가 취소를 놓치는 경우 대비).
+        var executeTask = Task.Run(() => Execute(script, session, runCt, ct, stopwatch), CancellationToken.None);
+        var delayTask = Task.Delay(timeoutMs, CancellationToken.None);
+
+        var completed = await Task.WhenAny(executeTask, delayTask);
+
+        if (completed == delayTask)
+        {
+            // timeout 발생 — task 는 계속 실행 중이지만 결과는 무시
+            stopwatch.Stop();
+            return new ScriptResult
+            {
+                Outcome = ScriptOutcome.Timeout,
+                Elapsed = stopwatch.Elapsed,
+                FailureMessage = $"stopped after {stopwatch.ElapsedMilliseconds} ms"
+            };
+        }
+
+        return await executeTask;
     }
 
     #endregion
