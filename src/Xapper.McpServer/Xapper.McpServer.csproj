@@ -84,4 +84,15 @@
     <MSBuild Projects="..\Xapper.Inspector\Xapper.Inspector.csproj" Targets="Build" />
   </Target>
 
+  <!-- 이 서버는 WPF 라 Windows 에서만 돈다. Microsoft.Data.Sqlite 가 싣는 다른 플랫폼의 네이티브 라이브러리는
+       산출물만 34MB 키우므로, 패키지 자산을 고른 직후 win 계열이 아닌 것을 목록에서 뺀다. deps.json 도 이 목록으로
+       만들어지므로 함께 빠진다. 실행 플랫폼을 하나로 고정(RuntimeIdentifier)하지 않는 것은, 그러면 x86·ARM64
+       Windows 를 버리고 산출물 경로와 이 프로젝트를 참조하는 테스트까지 바뀌기 때문이다. -->
+  <Target Name="KeepWindowsRuntimesOnly" AfterTargets="ResolvePackageAssets">
+    <ItemGroup>
+      <RuntimeTargetsCopyLocalItems Remove="@(RuntimeTargetsCopyLocalItems)"
+                                    Condition="!$([System.String]::Copy('%(RuntimeTargetsCopyLocalItems.RuntimeIdentifier)').StartsWith('win'))" />
+    </ItemGroup>
+  </Target>
+
 </Project>
