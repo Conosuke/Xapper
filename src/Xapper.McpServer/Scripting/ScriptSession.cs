@@ -143,13 +143,14 @@ internal sealed class ScriptSession
         var payload = new
         {
             sourceRef = sourceRef,
-            sourceX = o.SourceX.HasValue ? (int?)o.SourceX.Value : null,
-            sourceY = o.SourceY.HasValue ? (int?)o.SourceY.Value : null,
+            // 요소가 있으면 좌표는 0~1 비율이라 정수로 자르면 0.5 가 0 이 된다. 받은 값을 그대로 보낸다.
+            sourceX = o.SourceX,
+            sourceY = o.SourceY,
             targetRef = targetRef,
-            targetX = o.TargetX.HasValue ? (int?)o.TargetX.Value : null,
-            targetY = o.TargetY.HasValue ? (int?)o.TargetY.Value : null,
-            offsetX = o.OffsetX.HasValue ? (int?)o.OffsetX.Value : null,
-            offsetY = o.OffsetY.HasValue ? (int?)o.OffsetY.Value : null,
+            targetX = o.TargetX,
+            targetY = o.TargetY,
+            offsetX = o.OffsetX,
+            offsetY = o.OffsetY,
             modifiers = o.Modifiers,
             timeout = o.Timeout ?? DefaultTimeout
         };
@@ -323,6 +324,46 @@ internal sealed class ScriptSession
 
     #endregion
 
+    #region Window Tools
+
+    /// <summary>
+    /// 앱의 최상위 창과 뜬 창 기록을 JSON 문자열로 돌려줍니다. 쉼이 JSON.parse 로 객체로 바꾼다. options: {since}.
+    /// </summary>
+    public string Windows(JsValue? options)
+    {
+        var o = Options.From(options);
+        var response = Send("windows", new { since = o.Since });
+        var payload = PayloadOf(response);
+        Record("windows", o.Since is null ? "all" : $"since {o.Since}");
+        return payload.GetRawText();
+    }
+
+    /// <summary>앱의 메시지 상자에 답합니다. options: {timeout, allowFail}.</summary>
+    public string MessageBox(string button, JsValue? options)
+    {
+        var o = Options.From(options);
+        var response = Send("messageBox", new { button, timeout = o.Timeout ?? DefaultTimeout });
+        return Finish("messageBox", response, o.AllowFail, $"messageBox {button}");
+    }
+
+    /// <summary>앱의 열기·저장 대화상자에 경로로 답합니다. options: {timeout, allowFail}.</summary>
+    public string FileDialog(string path, JsValue? options)
+    {
+        var o = Options.From(options);
+        var response = Send("fileDialog", new { path, timeout = o.Timeout ?? DefaultTimeout });
+        return Finish("fileDialog", response, o.AllowFail, $"fileDialog {path}");
+    }
+
+    /// <summary>앱의 창을 최대화·복원·최소화하거나 앞으로 가져옵니다. options: {hwnd, allowFail}.</summary>
+    public string Window(string action, JsValue? options)
+    {
+        var o = Options.From(options);
+        var response = Send("window", new { action, hwnd = o.Hwnd });
+        return Finish("window", response, o.AllowFail, $"window {action}");
+    }
+
+    #endregion
+
     #region Notice / Logging
 
     /// <summary>조작 알림을 올립니다(알림이 없으면 아무것도 하지 않는다).</summary>
@@ -393,7 +434,9 @@ internal sealed class ScriptSession
             try
             {
                 var result = IpcSerializer.DeserializePayload<ActionResponse>(payload);
-                if (result.Pending)
+
+                // 모달을 띄운 조작은 결과가 정해진 것이다. 스크립트가 다음 줄에서 그 대화상자에 답할 수 있게 실패로 보지 않는다.
+                if (result.Pending && result.ModalDialog is null)
                     return true;
             }
             catch (JsonException)

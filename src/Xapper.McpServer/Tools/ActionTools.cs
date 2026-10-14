@@ -30,7 +30,8 @@ public sealed class ActionTools
         "process - no cursor or focus change, even under your own windows; falls back to real mouse input " +
         "only if that path is unavailable or the app's own popup/dialog covers the point (the response says " +
         "which). Use x/y for controls that need genuine mouse input (DevExpress grids). modifiers need x/y. " +
-        "If the click opens a modal dialog the call returns after timeout with a note. The response names the " +
+        "If the click opens a modal dialog the call returns as soon as it appears, naming it - answer it with " +
+        "xapper_message_box or xapper_file_dialog. The response names the " +
         "path taken - check it when a click seems to do nothing. For a double-click use xapper_doubleclick.")]
     public async Task<string> Click(
         [Description(ToolDescriptions.Ref)] int? @ref = null,
@@ -154,8 +155,8 @@ public sealed class ActionTools
         "Right, D1, F5 ...) is sent as that key - for literal text use xapper_type. modifiers (\"Ctrl\", " +
         "\"Shift\", \"Alt\", \"Ctrl+Shift\") are held in-process without real key presses; Ctrl/Alt + a character " +
         "is a chord, not typed. ref/target focuses that element first, otherwise the focused one. If the key " +
-        "opens a modal dialog the call returns after timeout with a note; the dialog is a Win32 window - see " +
-        "it with xapper_screenshot mode=\"screen\", not in a snapshot.")]
+        "opens a modal dialog the call returns after timeout with a note; the dialog is a Win32 window that a " +
+        "snapshot does not show - xapper_list_windows lists it and xapper_message_box answers it.")]
     public async Task<string> Key(
         [Description("WPF Key name (F2, Enter, Tab, Down), one character, or a string to type")] string key,
         [Description(ModifiersDescription)] string? modifiers = null,

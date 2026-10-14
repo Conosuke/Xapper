@@ -480,6 +480,31 @@
 
 ---
 
+### xapper_binding_errors
+Inspector 가 들어간 뒤 앱이 낸 XAML 바인딩 오류(경로 없음, 소스 없음, 변환 실패). 이 오류는 요소에 남지 않아
+`xapper_get_bindings` 로는 보이지 않고 WPF 바인딩 트레이스에만 나온다. 객체 해시만 다른 같은 오류(목록의 행마다
+반복되는 오류)는 한 줄로 합쳐 횟수를 센다. 서로 다른 오류는 100건까지 담고, 넘친 것은 건수만 센다.
+
+`xapper_launch` 는 첫 화면의 오류부터 잡는다. `xapper_attach` 는 붙은 뒤에 난 오류만 보므로, 그 전 화면은 다시 열어야 한다.
+
+**인자:**
+- `clear` (bool, 선택, 기본 false): 읽은 뒤 비운다. 다음 호출은 그 뒤에 난 오류만 보여 준다.
+
+**응답 (텍스트):**
+```
+2 distinct binding errors since collection started 12 s ago, first seen first:
+  x14  last 3021 ms ago  BindingExpression path error: 'Nmae' property not found on 'object' ''Person''. BindingExpression:Path=Nmae; DataItem='Person'; target element is 'TextBlock' (Name=''); target property is 'Text' (type 'String')
+  x1  last 2988 ms ago  Cannot find source for binding with reference 'ElementName=Missing'. ...
+```
+
+비었을 때: `No binding errors since collection started 12 s ago. Errors raised before that were not seen.`
+
+**실패 원인:**
+- `No active session` — 연결된 앱 없음
+- `Binding errors are not being collected in this process` — 이 기능이 없는 이전 Inspector 가 주입된 앱
+
+---
+
 ## 스크립트 실행
 
 ### xapper_run
@@ -554,6 +579,12 @@ xapper = {
   expand(target) → void,
   scroll(target, direction, {amount}) → void,
   drag(source, {sourceX, sourceY, targetX, targetY, offsetX, offsetY, modifiers, timeout}) → void,
+  
+  // 창·대화상자 (모달을 띄운 click 은 실패하지 않고 돌아온다)
+  windows({since}) → {now, open: [...], shown: [...]},
+  messageBox(button, {timeout}) → string,
+  fileDialog(path, {timeout}) → string,
+  window(action, {hwnd}) → string,
   
   // 검증
   waitUntil(selector, {timeout}) → void,
@@ -684,62 +715,112 @@ notice = {
 
 ---
 
-## Win32 도구 (향후)
+## Win32 창·대화상자 도구
 
-### xapper_file_dialog
-파일 열기 대화 자동 응답.
+MessageBox 와 공용 열기·저장 대화상자는 Win32 창이라 스냅샷에 나오지 않고, 떠 있는 동안 앱은 다른 조작을 처리하지 않는다.
+
+공통 규칙
+- 연결된 앱 프로세스가 소유한 최상위 창만 다룬다. 다른 프로그램의 창은 찾지도 누르지도 않는다.
+- 실패하면 응답 글이 `Error:` 로 시작하고 MCP `isError` 가 켜진다.
+- 시각은 앱 프로세스의 UTC, ISO-8601 밀리초(`2026-10-14T05:12:03.123Z`)다.
+- UI 스레드를 거치지 않으므로 모달이 떠 있어도 응답한다.
+
+### xapper_list_windows
+앱의 최상위 창과, 기준 시각 이후에 뜬 창의 기록.
 
 **인자:**
-- `filePath` (string, 필수): 선택할 파일 경로
-- `timeout` (int, 선택, 기본 5000)
+- `since` (string, 선택): 이 시각 이후에 뜬 창만 `shown` 에 담는다. 앞선 응답의 `now` 를 넘긴다. 없으면 보관 중인 전부(최근 100개).
 
-**응답:**
+**응답 (JSON 한 덩어리):**
 ```json
 {
-  "status": "ok",
-  "result": "FileDialog dismissed with: C:\\path\\to\\file.txt"
+  "now": "2026-10-14T22:56:39.783Z",
+  "open": [
+    { "hwnd": "0x10A26", "title": "XapperLive Confirm", "className": "#32770", "kind": "dialog", "modal": true,
+      "owner": "0x209CC", "shownAt": "2026-10-14T22:56:39.501Z", "hiddenAt": null }
+  ],
+  "shown": [ /* 같은 모양. since 이후에 뜬 창, 뜬 순서. 닫힌 창은 hiddenAt 이 있다 */ ]
 }
 ```
+- `open`: 지금 보이는 창, Z 순서 앞부터. 감시 시작 전부터 열려 있던 창은 `shownAt` 이 null.
+- `kind`: `dialog`(#32770) · `window`(제목 표시줄이 있는 창). 메뉴·툴팁·드롭다운은 모달이 아니면 담지 않는다.
+- `modal`: 뜰 때 다른 창을 막았는지. #32770 은 언제나 true.
+
+**NO_MODAL 판정:** 조작 전 응답의 `now` 를 `since` 로 넘겨 다시 부르고, `shown` 에 `"modal": true` 가 없으면 NO_MODAL.
+
+**실패 원인:**
+- `since "..." is not a time` — 시각 형식 오류
 
 ---
 
 ### xapper_message_box
-메시지 박스 자동 응답.
+앱의 메시지 상자를 기다려 버튼을 누르고 닫혔는지 확인한다. 버튼은 표시 글자가 아니라 표준 ID 로 누르므로 Windows 언어와 무관하다.
 
 **인자:**
-- `button` (string, 필수): "OK", "Yes", "No", "Cancel" 등
-- `timeout` (int, 선택, 기본 5000)
+- `button` (string, 필수): `ok` `cancel` `yes` `no` `abort` `retry` `ignore` `close` `tryagain` `continue` (대소문자 무관)
+- `timeout` (int, 선택, 기본 5000): 상자가 나타나기를 기다릴 시간(ms)
 
 **응답:**
-```json
-{
-  "status": "ok",
-  "result": "MessageBox dismissed with: Yes"
-}
 ```
+Answered "XapperLive Confirm" with yes. Message: "Save changes?"
+```
+
+**실패 원인:**
+- `Unknown button "..."` — 목록에 없는 이름
+- `No message box appeared within N ms.`
+- `"<제목>" has no yes button. It has: ok, cancel.`
+- `"<제목>" is still open after pressing yes.`
 
 ---
 
-### xapper_list_windows
-열린 창 목록 (캡처 포함).
+### xapper_file_dialog
+앱의 열기·저장 대화상자를 기다려 파일 이름 칸에 경로를 넣고 확인한 뒤 닫혔는지 확인한다.
 
-**인자:** 없음
+**인자:**
+- `path` (string, 필수): 절대 경로
+- `timeout` (int, 선택, 기본 5000)
 
 **응답:**
-```json
-{
-  "status": "ok",
-  "result": [
-    {
-      "hwnd": "0x00010A50",
-      "title": "Save As",
-      "className": "FileDialogInternal",
-      "visible": true,
-      "imageBase64": "iVBORw0KGgoAAAA..."
-    }
-  ]
-}
 ```
+Answered "<제목>" with C:\data\orders.csv
+```
+
+**실패 원인:**
+- `"<path>" is not an absolute path.`
+- `No open or save dialog appeared within N ms.`
+- `"<제목>" opened "<후속 제목>": <본문> It is still open; answer it with xapper_message_box.` — 덮어쓰기 확인·"파일 없음" 같은 후속 상자. 그 상자는 열린 채로 둔다.
+- `"<제목>" is still open after confirming <path>.`
+
+---
+
+### xapper_window
+앱의 창 하나를 최대화·복원·최소화하거나 앞으로 가져온 뒤 실제 창 상태로 확인한다.
+
+**인자:**
+- `action` (string, 필수): `maximize` `restore` `minimize` `front`. `restore` 는 일반 크기로 되돌린다.
+- `hwnd` (string, 선택): `xapper_list_windows` 의 핸들. 없으면 앱의 주 창.
+
+**응답:**
+```
+Maximized "Xapper Test App" (0x209CC)
+```
+
+**실패 원인:**
+- `Unknown action "..."`
+- `hwnd "..." is not a window handle.` / `0x... is not a window of this app.`
+- `Windows refused to bring "<제목>" to the front. ...` — 다른 앱이 입력을 쥐고 있을 때
+- `"<제목>" (0x...) did not change within 2000 ms.`
+
+---
+
+### 모달을 띄운 클릭
+`xapper_click`·`xapper_doubleclick`(과 스크립트의 `click`·`doubleClick`)이 앱의 모달을 띄우면 제한 시간을 채우지 않고 뜨는 즉시 돌아온다.
+
+```
+The click on ref=1 opened a modal dialog "XapperLive Confirm" (0x10A26). The app handles nothing else until it closes. Answer it with xapper_message_box, or xapper_file_dialog for an open or save dialog.
+```
+- MCP 도구: 성공(`isError` 꺼짐). `xapper_batch` 는 이 단계에서 멈춘다.
+- 스크립트: 실패로 보지 않고 다음 줄로 진행한다. 이어서 `xapper.messageBox()` 로 답한다.
 
 ---
 

@@ -30,12 +30,14 @@ internal sealed class ScriptRunner
         "find:(s)=>__xapper.Find(s), one:(s)=>__xapper.One(s)," +
         "click:(t,o)=>__xapper.Click(t,o), doubleClick:(t,o)=>__xapper.DoubleClick(t,o)," +
         "rightClick:(t,o)=>__xapper.RightClick(t,o), wheel:(t,n,o)=>__xapper.Wheel(t,n,o)," +
-        "drag:(a,b,o)=>__xapper.Drag(a,b,o), type:(t,x,o)=>__xapper.Type(t,x,o)," +
+        "drag:(s,o)=>__xapper.Drag(s,o), type:(t,x,o)=>__xapper.Type(t,x,o)," +
         "key:(k,o)=>__xapper.Key(k,o), select:(t,o)=>__xapper.Select(t,o)," +
         "toggle:(t)=>__xapper.Toggle(t), expand:(t,e)=>__xapper.Expand(t,e)," +
         "scroll:(t,o)=>__xapper.Scroll(t,o), get:(t,p)=>__xapper.Get(t,p)," +
         "assert:(t,p,e,o)=>__xapper.Assert(t,p,e,o), waitUntil:(s,o)=>__xapper.WaitUntil(s,o)," +
         "snapshot:(o)=>__xapper.Snapshot(o), screenshot:(o)=>__xapper.Screenshot(o)," +
+        "windows:(o)=>JSON.parse(__xapper.Windows(o)), messageBox:(b,o)=>__xapper.MessageBox(b,o)," +
+        "fileDialog:(p,o)=>__xapper.FileDialog(p,o), window:(a,o)=>__xapper.Window(a,o)," +
         "notice:{ show:(m)=>__xapper.NoticeShow(m), hide:()=>__xapper.NoticeHide() } };";
 
     private readonly Func<IpcMessage, CancellationToken, Task<IpcMessage>> _send;

@@ -92,7 +92,23 @@ public static class EntryPoint
     {
         var pipeName = Protocol.IpcPipeNames.ForProcess(Environment.ProcessId);
         Log($"Starting server on pipe: {pipeName} (startedBeforeApp={startedBeforeApp})");
-        _server = new IpcServer(pipeName, Log, startedBeforeApp ? ApplicationWait : null);
+        // 바인딩 오류는 화면이 처음 열릴 때 나고 끝나므로, 첫 요청을 기다리지 않고 주입되는 즉시 듣기 시작한다.
+        var bindingErrors = new Diagnostics.BindingErrorCollector();
+        try
+        {
+            bindingErrors.Start();
+        }
+        catch (Exception ex)
+        {
+            Log($"Binding error collection unavailable: {ex.Message}");
+        }
+
+        // 모달이 언제 떴는지는 뜬 순간에만 알 수 있으므로, 창 감시도 주입되는 즉시 시작한다.
+        var windows = new NativeWindows.WindowWatcher();
+        if (!windows.Start())
+            Log("Window watching unavailable: SetWinEventHook failed");
+
+        _server = new IpcServer(pipeName, Log, startedBeforeApp ? ApplicationWait : null, bindingErrors, windows);
         _ = Task.Run(async () =>
         {
             try

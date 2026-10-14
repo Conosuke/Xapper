@@ -25,8 +25,8 @@ extractor.ExtractAll();
 // 안내가 놓이는 자리가 셋이고 각각 읽히는 시점이 다르므로, 무엇을 어디에 둘지 기준을 정해 두었다.
 // 이 지침은 늘 전달되지만 쓰는 순간에서 가장 멀어 잘 잊히므로 전체 흐름과 도구 사이의 관계만 담는다.
 // 도구 하나를 어떻게 쓰고 그 응답을 어떻게 읽는지는 그 도구의 설명이 맡는다. 부르는 순간에 함께 읽히고,
-// 그 도구를 쓰면서 그 설명을 못 볼 수는 없기 때문이다. 작업 전체의 절차는 skills/ 의 스킬들(xapper-mcp,
-// xapper-e2e-make, xapper-e2e)이 맡는다.
+// 그 도구를 쓰면서 그 설명을 못 볼 수는 없기 때문이다. 작업 전체의 절차는 skills/ 의 스킬(xapper-mcp)이
+// 맡는다.
 // 가장 강하지만 불려야만 읽히므로, 그것이 없어도 되도록 앞의 둘이 스스로 서 있어야 한다.
 var serverInstructions = """
     Load these tools together before you start, not one at a time: xapper_screen_recall, xapper_screen_learn,
@@ -161,6 +161,7 @@ builder.Services.AddMcpServer(options =>
 .WithTools<RunTools>()
 .WithTools<ScreenTools>()
 .WithTools<EventTools>()
+.WithTools<WindowTools>()
 .WithTools<RecordTools>();
 
 var app = builder.Build();
