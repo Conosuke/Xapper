@@ -75,6 +75,12 @@ internal readonly struct Options
     /// <summary>드래그 상대 이동 Y(시작 요소 기준).</summary>
     public double? OffsetY { get; private init; }
 
+    /// <summary>windows: 이 시각(앞선 응답의 now) 이후에 뜬 창만.</summary>
+    public string? Since { get; private init; }
+
+    /// <summary>window: 대상 창 핸들. 없으면 주 창.</summary>
+    public string? Hwnd { get; private init; }
+
     #endregion
 
     #region Public Methods
@@ -107,7 +113,9 @@ internal readonly struct Options
             TargetX = Number(obj, "targetX"),
             TargetY = Number(obj, "targetY"),
             OffsetX = Number(obj, "offsetX"),
-            OffsetY = Number(obj, "offsetY")
+            OffsetY = Number(obj, "offsetY"),
+            Since = String(obj, "since"),
+            Hwnd = String(obj, "hwnd")
         };
     }
 
