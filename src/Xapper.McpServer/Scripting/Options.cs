@@ -57,6 +57,24 @@ internal readonly struct Options
     /// <summary>대상 요소 ref(스크린샷 등).</summary>
     public int? Ref { get; private init; }
 
+    /// <summary>드래그 시작 화면 좌표 X(픽셀).</summary>
+    public double? SourceX { get; private init; }
+
+    /// <summary>드래그 시작 화면 좌표 Y(픽셀).</summary>
+    public double? SourceY { get; private init; }
+
+    /// <summary>드래그 끝 화면 좌표 X(픽셀).</summary>
+    public double? TargetX { get; private init; }
+
+    /// <summary>드래그 끝 화면 좌표 Y(픽셀).</summary>
+    public double? TargetY { get; private init; }
+
+    /// <summary>드래그 상대 이동 X(시작 요소 기준).</summary>
+    public double? OffsetX { get; private init; }
+
+    /// <summary>드래그 상대 이동 Y(시작 요소 기준).</summary>
+    public double? OffsetY { get; private init; }
+
     #endregion
 
     #region Public Methods
@@ -83,7 +101,13 @@ internal readonly struct Options
             MaxWidth = Number(obj, "maxWidth") is double mw ? (int)mw : null,
             Mode = String(obj, "mode"),
             Path = String(obj, "path"),
-            Ref = Number(obj, "ref") is double r ? (int)r : null
+            Ref = Number(obj, "ref") is double r ? (int)r : null,
+            SourceX = Number(obj, "sourceX"),
+            SourceY = Number(obj, "sourceY"),
+            TargetX = Number(obj, "targetX"),
+            TargetY = Number(obj, "targetY"),
+            OffsetX = Number(obj, "offsetX"),
+            OffsetY = Number(obj, "offsetY")
         };
     }
 

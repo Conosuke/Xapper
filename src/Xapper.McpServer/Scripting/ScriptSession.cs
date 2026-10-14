@@ -127,16 +127,35 @@ internal sealed class ScriptSession
     }
 
     /// <summary>두 요소(또는 ref) 사이를 드래그합니다. 셀렉터 문자열은 드래그 IPC 가 지원하지 않아 예외.</summary>
-    public string Drag(object from, object to, JsValue? options)
+    public string Drag(object source, JsValue? options)
     {
-        var (fromRef, fromSel) = TargetArgument.Resolve(from);
-        var (toRef, toSel) = TargetArgument.Resolve(to);
-        if (fromSel is not null || toSel is not null)
+        var (sourceRef, sourceSel) = TargetArgument.Resolve(source);
+        if (sourceSel is not null)
             throw new ScriptFailure("drag", "drag needs element refs or find() results, not selector strings");
 
         var o = Options.From(options);
-        var response = Send("drag", new { sourceRef = fromRef, targetRef = toRef, modifiers = o.Modifiers, timeout = o.Timeout ?? DefaultTimeout });
-        return Finish("drag", response, o.AllowFail, $"drag {Describe(from)} -> {Describe(to)}");
+
+        // 옵션에서 대상 요소 또는 좌표 추출
+        int? targetRef = null;
+        if (o.Ref.HasValue)
+            targetRef = o.Ref;
+
+        var payload = new
+        {
+            sourceRef = sourceRef,
+            sourceX = o.SourceX.HasValue ? (int?)o.SourceX.Value : null,
+            sourceY = o.SourceY.HasValue ? (int?)o.SourceY.Value : null,
+            targetRef = targetRef,
+            targetX = o.TargetX.HasValue ? (int?)o.TargetX.Value : null,
+            targetY = o.TargetY.HasValue ? (int?)o.TargetY.Value : null,
+            offsetX = o.OffsetX.HasValue ? (int?)o.OffsetX.Value : null,
+            offsetY = o.OffsetY.HasValue ? (int?)o.OffsetY.Value : null,
+            modifiers = o.Modifiers,
+            timeout = o.Timeout ?? DefaultTimeout
+        };
+
+        var response = Send("drag", payload);
+        return Finish("drag", response, o.AllowFail, $"drag from {Describe(source)} with options");
     }
 
     /// <summary>Selector 컨트롤에서 항목을 선택합니다. options: {text, index, timeout, allowFail}.</summary>
