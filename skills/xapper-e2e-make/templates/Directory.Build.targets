@@ -1,2 +1,0 @@
-<!-- The nearest Directory.Build.targets wins; this empty one keeps the app repository's targets out. -->
-<Project />

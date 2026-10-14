@@ -99,16 +99,14 @@ src/
 ├── Xapper.Protocol        IPC 메시지 계약 (net6.0~9.0-windows, WPF 무의존)
 ├── Xapper.Injector        네이티브 인젝터 (P/Invoke로 DLL 주입)
 ├── Xapper.Inspector       인젝션 라이브러리 (net6.0~9.0-windows 멀티타겟)
-└── Xapper.McpServer       MCP 서버 (stdio transport, 29개 도구)
+└── Xapper.McpServer       MCP 서버 (stdio transport, 38개 도구)
 tests/
 ├── Xapper.TestApp         샘플 WPF 로그인 폼
 └── Xapper.Tests           단위 테스트 (xUnit)
 external/
 └── snoop-bin/             Snoop GenericInjector 네이티브 DLL
 skills/
-├── xapper-mcp/            에이전트 작업 절차 스킬 — 앱 조작 (Claude Code 쪽에 복사해 사용)
-├── xapper-e2e-make/       에이전트 작업 절차 스킬 — E2E 케이스 작성
-└── xapper-e2e/            에이전트 작업 절차 스킬 — E2E 케이스 실행
+└── xapper-mcp/            에이전트 작업 절차 스킬 — 앱 조작 (Claude Code 쪽에 복사해 사용)
 ```
 
 Inspector와 GenericInjector DLL은 McpServer에 **임베디드 리소스로 내장**되어 있어 빌드된 실행 파일만으로 동작합니다. 별도의 경로 설정이나 환경변수 없이 바로 사용 가능합니다.
@@ -262,20 +260,18 @@ src/Xapper.McpServer/bin/Debug/net9.0-windows/Xapper.McpServer.exe
 
 ### **에이전트 스킬 설치 (권장)**
 
-`skills/` 의 스킬 세 개를 Claude Code 쪽으로 복사하면, 에이전트가 작업을 시작하는 시점에 Xapper 사용 절차를 먼저 읽습니다. 서버 지침과 도구 설명이 닿지 못하는 자리를 메우는 것이라 실제 토큰 사용량 차이가 큽니다.
+`skills/` 의 스킬을 Claude Code 쪽으로 복사하면, 에이전트가 작업을 시작하는 시점에 Xapper 사용 절차를 먼저 읽습니다. 서버 지침과 도구 설명이 닿지 못하는 자리를 메우는 것이라 실제 토큰 사용량 차이가 큽니다.
 
 | 스킬 | 설명 |
 |---|---|
 | `xapper-mcp` | 앱을 직접 조작하고 확인하는 절차. 화면을 한 번 배워 두고 다음 방문에 다시 쓰는 흐름이 여기에 담겨 있습니다. |
-| `xapper-e2e-make` | 되는 흐름을 E2E 케이스로 남기는 절차 |
-| `xapper-e2e` | 이미 만든 E2E 케이스를 돌리고 결과를 읽는 절차 |
 
 ```bash
 # 여러 프로젝트에서 쓸 때
-cp -r skills/xapper-mcp skills/xapper-e2e-make skills/xapper-e2e ~/.claude/skills/
+cp -r skills/xapper-mcp ~/.claude/skills/
 
 # 한 프로젝트에서만 쓸 때
-cp -r skills/xapper-mcp skills/xapper-e2e-make skills/xapper-e2e <프로젝트>/.claude/skills/
+cp -r skills/xapper-mcp <프로젝트>/.claude/skills/
 ```
 
 자세한 내용은 [`skills/README.md`](skills/README.md) 를 참고하십시오.
