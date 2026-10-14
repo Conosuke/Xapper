@@ -1,12 +1,10 @@
 # Xapper 에이전트 스킬
 
-Xapper MCP 서버를 쓰는 에이전트에게 작업 절차를 알려 주는 스킬 세 개입니다.
+Xapper MCP 서버를 쓰는 에이전트에게 작업 절차를 알려 주는 스킬입니다.
 
 | 스킬 | 언제 불리는가 | 담는 것 |
 |---|---|---|
-| `xapper-mcp` | 앱을 직접 조작하고 확인할 때 | 화면 하나를 다루는 절차 |
-| `xapper-e2e-make` | 흐름을 E2E 케이스로 남길 때 | 겹침 확인·템플릿·작성 규칙·CI |
-| `xapper-e2e` | 만든 케이스를 돌릴 때 | 케이스 고르기·실행·결과 읽기 |
+| `xapper-mcp` | 앱을 직접 조작하고 확인할 때, 화면을 새로 만들거나 XAML 을 고친 뒤 | 화면 하나를 다루는 절차, 바인딩 오류 확인 |
 
 ## 설치
 
@@ -16,17 +14,17 @@ Xapper MCP 서버를 쓰는 에이전트에게 작업 절차를 알려 주는 �
 Xapper 를 여러 프로젝트에서 쓴다면 사용자 단위로 둡니다.
 
 ```bash
-cp -r skills/xapper-mcp skills/xapper-e2e-make skills/xapper-e2e ~/.claude/skills/
+cp -r skills/xapper-mcp ~/.claude/skills/
 ```
 
 한 프로젝트에서만 쓴다면 그 프로젝트에 둡니다.
 
 ```bash
-cp -r skills/xapper-mcp skills/xapper-e2e-make skills/xapper-e2e <프로젝트>/.claude/skills/
+cp -r skills/xapper-mcp <프로젝트>/.claude/skills/
 ```
 
-어느 쪽이든 Claude Code 를 새로 시작하면 목록에 `xapper-mcp`, `xapper-e2e-make`, `xapper-e2e` 가 나타납니다.
-에이전트가 작업 내용을 보고 알아서 부르며, 사용자가 `/xapper-mcp`, `/xapper-e2e-make`, `/xapper-e2e` 로 직접 부를 수도 있습니다.
+어느 쪽이든 Claude Code 를 새로 시작하면 목록에 `xapper-mcp` 가 나타납니다.
+에이전트가 작업 내용을 보고 알아서 부르며, 사용자가 `/xapper-mcp` 로 직접 부를 수도 있습니다.
 
 ## 고쳐 쓸 때
 
@@ -41,7 +39,7 @@ cp -r skills/xapper-mcp skills/xapper-e2e-make skills/xapper-e2e <프로젝트>/
 |---|---|---|
 | 서버 지침 (`Program.cs`) | 초기화 때 한 번, 늘 | 전체 흐름과 도구 사이의 관계 |
 | 도구 설명 | 그 도구를 고르는 순간 | 그 도구를 쓰는 법과 응답을 읽는 법 |
-| 스킬 (세 개) | 작업 첫머리, 불렸을 때만 | 화면 하나를 다루는 절차와 판단 |
+| 스킬 | 작업 첫머리, 불렸을 때만 | 화면 하나를 다루는 절차와 판단 |
 
 서버 지침은 늘 전달되지만 쓰는 순간에서 가장 멀어 잘 잊힙니다. 도구 설명은 그 도구를 쓰면서
 못 볼 수가 없으므로, 한 도구의 사실은 거기에 두는 편이 가장 확실합니다. 스킬은 셋 중 가장 강하지만
