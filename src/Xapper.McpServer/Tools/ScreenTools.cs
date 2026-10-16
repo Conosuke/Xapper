@@ -322,7 +322,7 @@ public sealed class ScreenTools
             : _store.AppendNote(profile.Signature, notes.Trim());
 
         if (!written)
-            return $"No screen record exists for the screen you are on (signature {profile.Signature}), so there " +
+            return $"Error: no screen record exists for the screen you are on (signature {profile.Signature}), so there " +
                    "is nothing to note against. Call xapper_screen_learn first - you can pass the same lines " +
                    "as its notes.";
 

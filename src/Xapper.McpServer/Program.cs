@@ -25,7 +25,8 @@ extractor.ExtractAll();
 // 안내가 놓이는 자리가 셋이고 각각 읽히는 시점이 다르므로, 무엇을 어디에 둘지 기준을 정해 두었다.
 // 이 지침은 늘 전달되지만 쓰는 순간에서 가장 멀어 잘 잊히므로 전체 흐름과 도구 사이의 관계만 담는다.
 // 도구 하나를 어떻게 쓰고 그 응답을 어떻게 읽는지는 그 도구의 설명이 맡는다. 부르는 순간에 함께 읽히고,
-// 그 도구를 쓰면서 그 설명을 못 볼 수는 없기 때문이다. 작업 전체의 절차는 skills/xapper 가 맡는다.
+// 그 도구를 쓰면서 그 설명을 못 볼 수는 없기 때문이다. 작업 전체의 절차는 skills/ 의 스킬(xapper-mcp)이
+// 맡는다.
 // 가장 강하지만 불려야만 읽히므로, 그것이 없어도 되도록 앞의 둘이 스스로 서 있어야 한다.
 var serverInstructions = """
     Load these tools together before you start, not one at a time: xapper_screen_recall, xapper_screen_learn,
@@ -117,6 +118,9 @@ builder.Services.AddSingleton<ScreenTracker>();
 builder.Services.AddSingleton(new ScreenStore(Path.Combine(
     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Xapper", "screens.db")));
 
+// 서버가 정상 종료되면 컨테이너가 녹화기를 정리하며 녹화 중인 파일을 마무리한다. 그러려면 팩토리로 등록해야 한다.
+builder.Services.AddSingleton(_ => new ScreenRecorder(ScreenRecorder.FindOnPath));
+
 builder.Services.AddMcpServer(options =>
 {
     options.ServerInfo = new()
@@ -142,7 +146,8 @@ builder.Services.AddMcpServer(options =>
         };
     }
 
-    return await next(context, ct);
+    // 실패를 글로만 알리면 MCP 클라이언트는 성공으로 본다. E2E 시나리오는 isError 만 보고 성패를 가리므로 여기서 붙인다.
+    return ToolFailure.Mark(await next(context, ct), context.Params?.Name ?? string.Empty);
 }))
 .WithTools<ProcessTools>()
 .WithTools<SnapshotTools>()
@@ -155,7 +160,9 @@ builder.Services.AddMcpServer(options =>
 .WithTools<NoticeTools>()
 .WithTools<RunTools>()
 .WithTools<ScreenTools>()
-.WithTools<EventTools>();
+.WithTools<EventTools>()
+.WithTools<WindowTools>()
+.WithTools<RecordTools>();
 
 var app = builder.Build();
 await app.RunAsync();

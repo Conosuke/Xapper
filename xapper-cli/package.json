@@ -1,0 +1,21 @@
+{
+  "name": "@xapper/cli",
+  "version": "0.1.0",
+  "description": "CLI for Xapper WPF testing",
+  "main": "lib/client.js",
+  "bin": {
+    "xapper": "bin/xapper.js"
+  },
+  "scripts": {
+    "test": "node test/runner.js"
+  },
+  "keywords": ["wpf", "testing", "automation"],
+  "author": "",
+  "license": "MIT",
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "dependencies": {
+    "commander": "^11.0.0"
+  }
+}
