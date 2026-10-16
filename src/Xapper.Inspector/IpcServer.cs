@@ -12,6 +12,7 @@ using Xapper.Inspector.VisualTree;
 using Xapper.Inspector.Actions;
 using Xapper.Inspector.Diagnostics;
 using Xapper.Inspector.Capture;
+using Xapper.Inspector.NativeWindows;
 
 namespace Xapper.Inspector;
 
@@ -34,6 +35,12 @@ public sealed class IpcServer
     /// 주입 경로는 이미 떠 있는 앱에 들어가므로 기다릴 이유가 없고, startup hook 경로만 이 값을 받는다.
     /// </summary>
     private readonly TimeSpan? _applicationWait;
+
+    /// <summary>주입 시점부터 듣는 바인딩 오류 수집기. 없으면 이 프로세스에서는 모으지 않는다.</summary>
+    private readonly BindingErrorCollector? _bindingErrors;
+
+    /// <summary>주입 시점부터 창이 뜨고 사라지는 시각을 기록하는 감시기. 없으면 뜬 창 기록과 모달 조기 응답이 없다.</summary>
+    private readonly WindowWatcher? _windows;
 
     /// <summary>Application 이 생겼는지 다시 묻는 간격.</summary>
     private static readonly TimeSpan ApplicationWaitPoll = TimeSpan.FromMilliseconds(50);
@@ -67,11 +74,16 @@ public sealed class IpcServer
     /// 앱이 WPF Application 을 만들기를 기다릴 시간. startup hook 으로 앱의 진입점보다 먼저 들어왔을 때만 준다 —
     /// 주입 경로는 이미 떠 있는 앱에 들어가므로 null 이다.
     /// </param>
-    public IpcServer(string pipeName, Action<string>? log = null, TimeSpan? applicationWait = null)
+    /// <param name="bindingErrors">주입 시점부터 듣고 있는 바인딩 오류 수집기. 없으면 바인딩 오류 요청에 오류로 답한다.</param>
+    /// <param name="windows">주입 시점부터 창을 기록하는 감시기. 없으면 뜬 창 기록이 비고, 클릭은 모달을 제한 시간까지 기다린다.</param>
+    public IpcServer(string pipeName, Action<string>? log = null, TimeSpan? applicationWait = null,
+        BindingErrorCollector? bindingErrors = null, WindowWatcher? windows = null)
     {
         _pipeName = pipeName;
         _log = log;
         _applicationWait = applicationWait;
+        _bindingErrors = bindingErrors;
+        _windows = windows;
     }
 
     #endregion
@@ -255,9 +267,51 @@ public sealed class IpcServer
             Pending = true,
             Message = $"{what} was delivered, but the application has not finished handling it after {timeoutMs} ms. " +
                       "Either it is still busy with it, or the action opened a modal dialog (a MessageBox is a Win32 window and does " +
-                      "not appear in snapshots - use xapper_screenshot with mode=\"screen\" to see it; the person has to dismiss " +
-                      "it). Re-read the state before relying on this action's outcome."
+                      "not appear in snapshots - xapper_list_windows lists it and xapper_message_box answers it). Re-read the " +
+                      "state before relying on this action's outcome."
         });
+    }
+
+    /// <summary>
+    /// 조작이 앱의 모달 대화상자를 띄웠을 때의 응답. 제한 시간을 다 채우지 않고 뜨는 즉시 돌려준다.
+    /// Pending 을 켜 두는 것은 배치가 여기서 멈추게 하기 위해서다. 앱은 그 대화상자가 닫힐 때까지 다른 조작을 처리하지 않는다.
+    /// </summary>
+    private static IpcMessage ModalOpenedResponse(string messageId, string what, WindowSighting modal)
+    {
+        var window = modal.Window;
+        var label = $"\"{window.Title}\" ({ProcessWindows.Format(window.Hwnd)})";
+        var next = window.Kind == "dialog"
+            ? "Answer it with xapper_message_box, or xapper_file_dialog for an open or save dialog."
+            : "It is a WPF window, so act on it with the usual tools.";
+
+        return IpcSerializer.CreateResponse(messageId, new ActionResponse
+        {
+            Success = true,
+            Pending = true,
+            ModalDialog = label,
+            Message = $"{what} opened a modal dialog {label}. The app handles nothing else until it closes. {next}"
+        });
+    }
+
+    /// <summary>
+    /// 앱이 조작을 다 처리하기를 기다리되, 그사이 이 앱의 모달이 뜨면 바로 그 모달을 돌려줍니다.
+    /// 모달 루프 안에서는 처리가 끝나지 않아 제한 시간을 다 채우게 되는데, 그동안 부르는 쪽은 할 일이 없다.
+    /// </summary>
+    /// <param name="handled">처리가 끝나기를 기다리는 작업.</param>
+    /// <param name="since">조작을 시작한 시각. 그 뒤에 뜬 모달만 본다.</param>
+    /// <returns>모달이 먼저 떴으면 (기본값, 모달), 아니면 (작업 결과, null).</returns>
+    private async Task<(T? Result, WindowSighting? Modal)> HandledOrModalAsync<T>(Task<T> handled, DateTime since)
+    {
+        if (_windows is not { IsRunning: true } windows)
+            return (await handled, null);
+
+        using var stop = new CancellationTokenSource();
+        var modal = windows.WaitForModalAsync(since, stop.Token);
+        if (await Task.WhenAny(handled, modal) == modal && await modal is { } opened)
+            return (default, opened);
+
+        stop.Cancel();
+        return (await handled, null);
     }
 
     /// <summary>
@@ -486,6 +540,11 @@ public sealed class IpcServer
                 "assert" => await HandleAssert(message),
                 "find" => await HandleFind(message),
                 "elementAt" => await HandleElementAt(message),
+                "bindingErrors" => HandleBindingErrors(message),
+                "windows" => HandleWindows(message),
+                "messageBox" => await HandleMessageBox(message),
+                "fileDialog" => await HandleFileDialog(message),
+                "window" => await HandleWindow(message),
                 _ => IpcSerializer.CreateError(message.Id, $"Unknown method: {message.Method}")
             };
         }
@@ -598,6 +657,7 @@ public sealed class IpcServer
             return NotReadyError(message.Id, elementRef, request.Timeout, waiter);
 
         var withMods = modifiers == ModifierKeys.None ? "" : $" with {request.Modifiers?.Trim()}";
+        var what = $"The click on ref={elementRef}";
 
         // 좌표 클릭: 먼저 후킹 경로로 실제 커서 없이 시도한다. 좌표 변환과 창 핸들은 UI 스레드에서 구하고,
         // WM 메시지 전송은 UI 스레드 밖에서(대상 창으로 크로스스레드) 돌린다.
@@ -606,26 +666,43 @@ public sealed class IpcServer
             var target = await Application.Current.Dispatcher.InvokeAsync(
                 () => (Hwnd: HwndHandleOf(element), Screen: MouseInput.ToScreenPoint(element, request.X.Value, request.Y.Value)));
 
+            var hookedAt = DateTime.UtcNow;
             var hooked = request.DoubleClick
                 ? SyntheticMouse.TryDoubleClick(target.Hwnd, target.Screen, modifiers)
                 : SyntheticMouse.TryClick(target.Hwnd, target.Screen, modifiers);
-            if (hooked == GestureResult.Stalled && !await StalledHandlerFinishedAsync(request.Timeout))
-                return StillHandlingResponse(message.Id, $"The click on ref={elementRef}", request.Timeout);
+            if (hooked == GestureResult.Stalled)
+            {
+                var (finished, stalledModal) = await HandledOrModalAsync(StalledHandlerFinishedAsync(request.Timeout), hookedAt);
+                if (stalledModal is not null)
+                    return ModalOpenedResponse(message.Id, what, stalledModal);
+                if (!finished)
+                    return StillHandlingResponse(message.Id, what, request.Timeout);
+            }
             if (hooked != GestureResult.Unavailable)
             {
                 var hookVerb = request.DoubleClick ? "Double-clicked" : "Clicked";
                 var hookText = $"{hookVerb}{withMods} ref={elementRef} at ({request.X:F2},{request.Y:F2}) " +
                                "via synthetic mouse input (no cursor movement)";
-                return IpcSerializer.CreateResponse(message.Id,
-                    new ActionResponse { Success = true, Message = await SettleAsync(hookText, request.Timeout) });
+                var hookSettled = await SettleAsync(hookText, request.Timeout);
+
+                // 핸들러가 대화상자를 Dispatcher 로 미뤄 띄우면 클릭 자체는 제때 끝나므로, 끝난 뒤에도 한 번 더 본다.
+                if (_windows?.FirstModalSince(hookedAt) is { } lateModal)
+                    return ModalOpenedResponse(message.Id, what, lateModal);
+
+                return IpcSerializer.CreateResponse(message.Id, new ActionResponse { Success = true, Message = hookSettled });
             }
             // 후킹을 걸 수 없으면 아래의 기존 좌표 클릭(실제 입력)으로 폴백한다.
         }
 
-        var (clickDone, outcome) = await RunOnUiThread(
-            () => ClickAction.Execute(element, request.X, request.Y, request.DoubleClick, modifiers), request.Timeout);
+        var clickedAt = DateTime.UtcNow;
+        var (clickResult, clickModal) = await HandledOrModalAsync(RunOnUiThread(
+            () => ClickAction.Execute(element, request.X, request.Y, request.DoubleClick, modifiers), request.Timeout), clickedAt);
+        if (clickModal is not null)
+            return ModalOpenedResponse(message.Id, what, clickModal);
+
+        var (clickDone, outcome) = clickResult;
         if (!clickDone)
-            return StillHandlingResponse(message.Id, $"The click on ref={elementRef}", request.Timeout);
+            return StillHandlingResponse(message.Id, what, request.Timeout);
 
         var posInfo = request.X.HasValue && request.Y.HasValue
             ? $" at ({request.X:F2},{request.Y:F2})"
@@ -635,7 +712,11 @@ public sealed class IpcServer
         if (outcome.Warning is not null)
             text += $" | {outcome.Warning}";
 
-        var response = new ActionResponse { Success = true, Message = await SettleAsync(text, request.Timeout) };
+        var settled = await SettleAsync(text, request.Timeout);
+        if (_windows?.FirstModalSince(clickedAt) is { } deferredModal)
+            return ModalOpenedResponse(message.Id, what, deferredModal);
+
+        var response = new ActionResponse { Success = true, Message = settled };
         return IpcSerializer.CreateResponse(message.Id, response);
     }
 
@@ -1400,6 +1481,148 @@ public sealed class IpcServer
         }
 
         return IpcSerializer.CreateResponse(message.Id, response);
+    }
+
+    /// <summary>
+    /// 주입 시점부터 모아 둔 바인딩 오류를 돌려줍니다.
+    /// 수집기는 UI 스레드와 무관하게 읽히므로 Dispatcher 를 거치지 않는다. 모달이 떠 있어도 답할 수 있다.
+    /// </summary>
+    private IpcMessage HandleBindingErrors(IpcMessage message)
+    {
+        if (_bindingErrors?.StartedAt is not { } startedAt)
+            return IpcSerializer.CreateError(message.Id,
+                "Binding errors are not being collected in this process. Launch or attach again with this build.");
+
+        var request = message.Payload is { } payload
+            ? IpcSerializer.DeserializePayload<BindingErrorsRequest>(payload)
+            : new BindingErrorsRequest();
+
+        var now = Environment.TickCount64;
+        var records = _bindingErrors.Read(request.Clear, out var overflow);
+        var response = new BindingErrorsResponse { Overflow = overflow, CollectingForMs = now - startedAt };
+
+        foreach (var record in records)
+        {
+            response.Errors.Add(new BindingErrorEntry
+            {
+                Message = record.Message,
+                Count = record.Count,
+                FirstAgoMs = Math.Max(0, now - record.FirstAt),
+                LastAgoMs = Math.Max(0, now - record.LastAt)
+            });
+        }
+
+        return IpcSerializer.CreateResponse(message.Id, response);
+    }
+
+    /// <summary>
+    /// 앱의 최상위 창과, 기준 시각 이후에 뜬 창의 기록을 돌려줍니다.
+    /// 창 정보는 Win32 로만 읽으므로 UI 스레드를 거치지 않는다. 모달이 떠 있어도 답할 수 있다.
+    /// </summary>
+    private IpcMessage HandleWindows(IpcMessage message)
+    {
+        var request = message.Payload is { } payload
+            ? IpcSerializer.DeserializePayload<WindowsRequest>(payload)
+            : new WindowsRequest();
+
+        DateTime? since = null;
+        if (!string.IsNullOrWhiteSpace(request.Since))
+        {
+            if (!DateTime.TryParse(request.Since, System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal,
+                    out var parsed))
+                return IpcSerializer.CreateError(message.Id,
+                    $"since \"{request.Since}\" is not a time. Pass the now value of an earlier response, " +
+                    "e.g. 2026-10-14T05:12:03.123Z.");
+            since = parsed;
+        }
+
+        var response = new WindowsResponse { Now = IsoTime(DateTime.UtcNow) };
+
+        foreach (var hwnd in ProcessWindows.Visible())
+        {
+            if (ProcessWindows.Describe(hwnd) is { } window)
+                response.Open.Add(WindowEntryOf(window, _windows?.ShownAtOf(hwnd), null));
+        }
+
+        foreach (var sighting in _windows?.Since(since) ?? [])
+            response.Shown.Add(WindowEntryOf(sighting.Window, sighting.ShownAt, sighting.HiddenAt));
+
+        return IpcSerializer.CreateResponse(message.Id, response);
+    }
+
+    /// <summary>앱의 메시지 상자에 답합니다.</summary>
+    private static async Task<IpcMessage> HandleMessageBox(IpcMessage message)
+    {
+        if (message.Payload is not { } payload)
+            return IpcSerializer.CreateError(message.Id, "messageBox needs a button: ok, cancel, yes, no ….");
+
+        var request = IpcSerializer.DeserializePayload<MessageBoxRequest>(payload);
+        return NativeResponse(message.Id, await DialogAnswerer.AnswerMessageBoxAsync(request.Button, request.Timeout));
+    }
+
+    /// <summary>앱의 열기·저장 대화상자에 경로로 답합니다.</summary>
+    private static async Task<IpcMessage> HandleFileDialog(IpcMessage message)
+    {
+        if (message.Payload is not { } payload)
+            return IpcSerializer.CreateError(message.Id, "fileDialog needs a path.");
+
+        var request = IpcSerializer.DeserializePayload<FileDialogRequest>(payload);
+        return NativeResponse(message.Id, await DialogAnswerer.AnswerFileDialogAsync(request.Path, request.Timeout));
+    }
+
+    /// <summary>앱의 창 하나를 최대화·복원·최소화하거나 앞으로 가져옵니다. 핸들이 없으면 주 창이다.</summary>
+    private static async Task<IpcMessage> HandleWindow(IpcMessage message)
+    {
+        if (message.Payload is not { } payload)
+            return IpcSerializer.CreateError(message.Id, "window needs an action: maximize, restore, minimize or front.");
+
+        var request = IpcSerializer.DeserializePayload<WindowRequest>(payload);
+
+        IntPtr hwnd;
+        if (string.IsNullOrWhiteSpace(request.Hwnd))
+        {
+            hwnd = ProcessWindows.Main();
+            if (hwnd == IntPtr.Zero)
+                return IpcSerializer.CreateError(message.Id, "The app has no window to act on yet.");
+        }
+        else if (!ProcessWindows.TryParse(request.Hwnd, out hwnd))
+        {
+            return IpcSerializer.CreateError(message.Id,
+                $"hwnd \"{request.Hwnd}\" is not a window handle. Pass one from xapper_list_windows, e.g. 0x1A2B.");
+        }
+
+        return NativeResponse(message.Id, await WindowCommands.RunAsync(request.Action, hwnd));
+    }
+
+    /// <summary>창·대화상자 조작 결과를 응답으로. 실패는 오류 응답이라 도구 쪽에서 "Error:" 로 시작한다.</summary>
+    private static IpcMessage NativeResponse(string messageId, NativeResult result)
+    {
+        return result.Success
+            ? IpcSerializer.CreateResponse(messageId, new ActionResponse { Success = true, Message = result.Text })
+            : IpcSerializer.CreateError(messageId, result.Text);
+    }
+
+    /// <summary>창 하나를 응답에 담는 모양으로.</summary>
+    private static WindowEntry WindowEntryOf(NativeWindow window, DateTime? shownAt, DateTime? hiddenAt)
+    {
+        return new WindowEntry
+        {
+            Hwnd = ProcessWindows.Format(window.Hwnd),
+            Title = window.Title,
+            ClassName = window.ClassName,
+            Kind = window.Kind,
+            Modal = window.Modal,
+            Owner = window.Owner == IntPtr.Zero ? null : ProcessWindows.Format(window.Owner),
+            ShownAt = shownAt is { } shown ? IsoTime(shown) : null,
+            HiddenAt = hiddenAt is { } hidden ? IsoTime(hidden) : null
+        };
+    }
+
+    /// <summary>UTC 시각을 ISO-8601 밀리초 문자열로. 예: 2026-10-14T05:12:03.123Z.</summary>
+    private static string IsoTime(DateTime utc)
+    {
+        return utc.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", System.Globalization.CultureInfo.InvariantCulture);
     }
 
     /// <summary>

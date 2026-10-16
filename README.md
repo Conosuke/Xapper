@@ -99,14 +99,14 @@ src/
 ├── Xapper.Protocol        IPC 메시지 계약 (net6.0~9.0-windows, WPF 무의존)
 ├── Xapper.Injector        네이티브 인젝터 (P/Invoke로 DLL 주입)
 ├── Xapper.Inspector       인젝션 라이브러리 (net6.0~9.0-windows 멀티타겟)
-└── Xapper.McpServer       MCP 서버 (stdio transport, 29개 도구)
+└── Xapper.McpServer       MCP 서버 (stdio transport, 38개 도구)
 tests/
 ├── Xapper.TestApp         샘플 WPF 로그인 폼
 └── Xapper.Tests           단위 테스트 (xUnit)
 external/
 └── snoop-bin/             Snoop GenericInjector 네이티브 DLL
 skills/
-└── xapper/                에이전트 작업 절차 스킬 (Claude Code 쪽에 복사해 사용)
+└── xapper-mcp/            에이전트 작업 절차 스킬 — 앱 조작 (Claude Code 쪽에 복사해 사용)
 ```
 
 Inspector와 GenericInjector DLL은 McpServer에 **임베디드 리소스로 내장**되어 있어 빌드된 실행 파일만으로 동작합니다. 별도의 경로 설정이나 환경변수 없이 바로 사용 가능합니다.
@@ -182,6 +182,8 @@ Inspector와 GenericInjector DLL은 McpServer에 **임베디드 리소스로 내
 - 담지 못한 것이 있으면 응답이 그 사실을 알린다 — `render`는 열려 있는 다른 창 개수를, `screen`은 앱의 창이 앞에 없다는 사실을
 - `xapper_assert` : 속성 값 단언 (PASS/FAIL 반환)
 - `xapper_batch` : 여러 단계를 한 호출에 순서대로 실행. 각 단계는 `{"tool": "click", ...그 도구의 인자}` 로 적고(click·doubleclick·rightclick·wheel·type·key·select·toggle·expand·scroll·find·get_property·assert), 첫 실패에서 중단하며 단계별 결과를 번호를 붙여 단일 도구와 같은 형식으로 돌려준다
+- 실패한 도구 호출은 MCP 의 `isError` 로 표시된다. 응답 글을 읽지 않아도 성패를 가릴 수 있어서, AI 없이 도는 E2E 시나리오가 이것만 보고 멈춘다
+- `xapper_record_start` / `xapper_record_stop` : ffmpeg 로 데스크톱 전체를 MP4 에 녹화한다. 무인 머신에서 돈 E2E 시나리오를 다시 보기 위한 것이라 모니터 전체를 찍고, 사람이 쓰는 PC 에서는 다른 창도 함께 찍힌다. 조각 MP4 로 써서 실행이 강제로 끝나도 끊긴 지점까지 재생된다. 서버의 PATH 에 ffmpeg 가 있어야 한다
 
 <br/>
 
@@ -258,14 +260,18 @@ src/Xapper.McpServer/bin/Debug/net9.0-windows/Xapper.McpServer.exe
 
 ### **에이전트 스킬 설치 (권장)**
 
-`skills/xapper` 를 Claude Code 쪽으로 복사하면, 에이전트가 작업을 시작하는 시점에 Xapper 사용 절차를 먼저 읽습니다. 서버 지침과 도구 설명이 닿지 못하는 자리를 메우는 것이라 실제 토큰 사용량 차이가 큽니다. 특히 화면을 한 번 배워 두고 다음 방문에 다시 쓰는 흐름이 여기에 담겨 있습니다.
+`skills/` 의 스킬을 Claude Code 쪽으로 복사하면, 에이전트가 작업을 시작하는 시점에 Xapper 사용 절차를 먼저 읽습니다. 서버 지침과 도구 설명이 닿지 못하는 자리를 메우는 것이라 실제 토큰 사용량 차이가 큽니다.
+
+| 스킬 | 설명 |
+|---|---|
+| `xapper-mcp` | 앱을 직접 조작하고 확인하는 절차. 화면을 한 번 배워 두고 다음 방문에 다시 쓰는 흐름이 여기에 담겨 있습니다. |
 
 ```bash
 # 여러 프로젝트에서 쓸 때
-cp -r skills/xapper ~/.claude/skills/
+cp -r skills/xapper-mcp ~/.claude/skills/
 
 # 한 프로젝트에서만 쓸 때
-cp -r skills/xapper <프로젝트>/.claude/skills/
+cp -r skills/xapper-mcp <프로젝트>/.claude/skills/
 ```
 
 자세한 내용은 [`skills/README.md`](skills/README.md) 를 참고하십시오.
@@ -289,7 +295,7 @@ AI 에이전트가 자동으로 수행하는 흐름:
 4. xapper_find "UsernameInput" → 입력 필드 ref 획득
 5. xapper_type {ref, "admin"}  → 텍스트 입력
 6. xapper_click {loginRef}     → 로그인 버튼 클릭
-7. xapper_assert {statusRef, "Text", "contains", "Welcome"}
+7. xapper_assert {statusRef, "Text", "Welcome, admin!"}
                                → 결과 검증 (PASS/FAIL)
 ```
 
@@ -317,8 +323,10 @@ AI 에이전트가 자동으로 수행하는 흐름:
 | `xapper_get_property` | 속성 읽기 | `ref`, `propertyName` |
 | `xapper_get_bindings` | 바인딩 조회 | `ref` |
 | `xapper_screenshot` | 스크린샷 (이미지 반환) | `ref`, `maxWidth`, `savePath`, `mode` (모두 선택) |
-| `xapper_assert` | 값 단언 | `ref`, `propertyName`, `operator`, `expected` |
+| `xapper_assert` | 값 단언 (대소문자를 가리지 않는 문자열 일치, 기다리지 않음) | `ref` 또는 `target`, `property`, `expected` |
 | `xapper_batch` | 여러 단계를 한 호출에 (첫 실패에서 중단, 단계별 결과) | `steps` (`{"tool", ...}` 배열, 최대 50) |
+| `xapper_record_start` | 데스크톱 녹화 시작 (무인 머신용) | `path` (절대 경로 .mp4), `fps`(선택) |
+| `xapper_record_stop` | 녹화 종료와 파일 마무리 | - |
 
 <br/>
 

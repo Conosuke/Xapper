@@ -39,7 +39,8 @@ public sealed class BatchTools
         "already know - fill a form, open an editor and type into it, then verify with assert - instead of " +
         "spending one turn per action. Target selectors (\"id=...\", \"text=...\") make refs unnecessary, so a whole " +
         "flow can run without a snapshot in between. A step that opens a modal dialog ends the batch with the " +
-        "'still handling' note and the remaining steps are not run.")]
+        "'still handling' note and the remaining steps are not run. A batch that stops early - on a failed step " +
+        "or on a step that opened a modal dialog - is reported as an error.")]
     public async Task<string> Batch(
         [Description("JSON array of steps, each {\"tool\": name, ...args} using that tool's own argument names " +
                      "(ref or target, text, key, x/y, modifiers, propertyName, expected...). Tools: click, doubleclick, " +
@@ -66,7 +67,7 @@ public sealed class BatchTools
             if (IsFailure(response, text) || IsPending(response))
             {
                 var remaining = plan.Count - i - 1;
-                sb.Append($" (batch stopped; {remaining} remaining step(s) not run)");
+                sb.Append($"{ToolFailure.BatchStopped} {remaining} remaining step(s) not run)");
                 break;
             }
 
@@ -101,10 +102,7 @@ public sealed class BatchTools
     /// 검증이 틀린 뒤의 조작은 이미 어긋난 상태 위에서 도는 것이므로 계속하지 않는다.
     /// </summary>
     private static bool IsFailure(IpcMessage response, string text) =>
-        response.Type == "error"
-        || text.StartsWith("Error:", StringComparison.Ordinal)
-        || text.StartsWith("Failed:", StringComparison.Ordinal)
-        || text.StartsWith("FAIL", StringComparison.Ordinal);
+        response.Type == "error" || ToolFailure.IsFailure(text);
 
     /// <summary>
     /// 조작이 전달만 되고 앱이 아직 처리 중이면(대개 모달 대화상자) 그 뒤 단계는 어긋난 상태 위에서 돌게 되므로 멈춘다.

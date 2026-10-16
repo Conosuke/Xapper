@@ -1,6 +1,6 @@
 ---
-name: xapper
-description: Use when something has to be checked in a running WPF desktop application rather than in code or tests - launching the app, clicking and typing in it, reading what a screen holds, or confirming that a change behaves as intended. Also "방금 작성한 코드 잘 돌아가는지 실제로 확인해줘", "앱 띄워서 확인해줘", "화면에서 직접 눌러봐", "UI 동작 확인해줘", "실제로 되는지 테스트해줘".
+name: xapper-mcp
+description: Use when something has to be checked in a running WPF desktop application rather than in code or tests - launching the app, clicking and typing in it, reading what a screen holds, answering its message boxes and file dialogs, or confirming that a change behaves as intended. Also required after building a new WPF screen or changing a screen's XAML, to check it has no binding errors. Also "방금 작성한 코드 잘 돌아가는지 실제로 확인해줘", "앱 띄워서 확인해줘", "화면에서 직접 눌러봐", "UI 동작 확인해줘", "실제로 되는지 테스트해줘", "바인딩 에러 없는지 확인해줘".
 ---
 
 # Driving a WPF app with Xapper
@@ -137,6 +137,27 @@ Two tools send a sequence:
 - **`xapper_run`** when there is a loop, a condition or a wait. The script runs entirely inside the
   app and returns a summary. Prefer `waitUntil` over sleeping, so the same script can be re-run.
 
+### Dialogs outside the visual tree
+
+**Message boxes and open/save dialogs are answered, not looked at.** They are Win32 windows, so a
+snapshot does not show them, and while one is up the app handles nothing else. A click that raises
+one comes back the moment it appears and names it; answer it with `xapper_message_box` (ok, yes,
+no, cancel …) or `xapper_file_dialog` (an absolute path). Both press buttons by their standard ID,
+so they work whatever language Windows is in, and both fail rather than claim success if the
+dialog stays open. A save dialog that asks to overwrite fails quoting that question and leaves it
+up for `xapper_message_box`. In a script the same click does not fail, so the next line can answer:
+
+```js
+xapper.click('name=SaveButton', {x: 0.5, y: 0.5});
+xapper.messageBox('yes');
+```
+
+`xapper_list_windows` reads which of the app's windows are open and which appeared since a time,
+each with when it showed and whether it was modal - pass the `now` of a call made before an action
+as `since` to tell whether that action raised a dialog. `xapper_window` maximizes, restores,
+minimizes or brings to the front one of the app's windows. None of these touch another program's
+windows.
+
 ## 4. Verify without pixels
 
 Choose by what you actually need to know:
@@ -147,12 +168,14 @@ Choose by what you actually need to know:
   cells has no element to inspect, yet its selection still raises an event. Ask right after acting,
   while what you are looking for is near the end of the list.
 - **What is this one value now?** `xapper_get_property` or `xapper_assert`.
+- **Is a value blank because its binding is broken?** `xapper_binding_errors` - after a XAML change this
+  check is required; see "Check the bindings whenever XAML is new or changed" below.
 - **What does this panel hold?** `xapper_snapshot` with `rootRef` set to it. Same content, as text.
 - **How is it drawn?** Only then a picture: layout, rendering, a chart, a control that paints itself.
 
 When you do take one, narrow it with `ref`. That works in both modes, so choosing `mode="screen"`
-to catch a dialog does not force a full-desktop shot. Only `annotate` is render-only. You almost
-always have a ref to narrow with: the `xapper_find` that located the thing you are about to look at
+does not force a full-desktop shot. Only `annotate` is render-only. You almost always have a ref to
+narrow with: the `xapper_find` that located the thing you are about to look at
 handed you one, and on a learned screen the record's selectors point at every panel worth framing.
 Reach for the whole window only when what you need to see is the whole window.
 
@@ -213,6 +236,32 @@ Two properties make the record durable, and both are worth knowing:
   data changes.
 - A rebuilt app produces new structures and therefore new keys, so stale records stop matching
   rather than answering wrongly. Use `xapper_screen_forget` after a redesign you want re-learned.
+
+## Check the bindings whenever XAML is new or changed
+
+A binding whose path names a property the data does not have shows nothing: the value is blank, no
+exception is thrown, no element carries an error. WPF only writes it to its debug trace, which
+`xapper_binding_errors` reads. Nothing else in a session will notice it, so this check is required,
+not a fallback for when something looks wrong. Call it:
+
+- **after building a new screen** - a window, page, dialog, user control or data template;
+- **after changing the XAML of an existing screen** - bindings, templates, styles, converters or the
+  view model it binds to;
+- **whenever the person asks** whether bindings are broken.
+
+Do it in this order:
+
+1. Start the app with `xapper_launch`, not `xapper_attach`: launch hears errors from the very first
+   screen, attach only from the moment it attaches.
+2. Call `xapper_binding_errors` with `clear=true` just before opening the screen, so what comes back
+   afterwards belongs to that screen.
+3. Open the screen and make it draw what it binds: switch its tabs, expand its rows, select an item,
+   open its pop-ups. A binding inside a template is only evaluated when that template is shown.
+4. Call `xapper_binding_errors` again. "No binding errors" counts only for the parts you opened.
+
+When errors come back, report each line as it is: it already names the binding's path, the type of
+the data it looked in, and the element and property it feeds. If the screen is your change, fix it
+and check again; a screen with binding errors is not finished.
 
 ## What the measurements show
 
