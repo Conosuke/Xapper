@@ -63,21 +63,21 @@ public sealed class ElementFinder
         if (request.Name != null)
         {
             var name = (element as FrameworkElement)?.Name;
-            if (name == null || !name.Contains(request.Name, StringComparison.OrdinalIgnoreCase))
+            if (name == null || !Bcl.Contains(name, request.Name, StringComparison.OrdinalIgnoreCase))
                 return false;
         }
 
         if (request.AutomationId != null)
         {
             var id = AutomationProperties.GetAutomationId(element);
-            if (id == null || !id.Contains(request.AutomationId, StringComparison.OrdinalIgnoreCase))
+            if (id == null || !Bcl.Contains(id, request.AutomationId, StringComparison.OrdinalIgnoreCase))
                 return false;
         }
 
         if (request.Text != null)
         {
             var text = ElementText.Of(element);
-            if (text == null || !text.Contains(request.Text, StringComparison.OrdinalIgnoreCase))
+            if (text == null || !Bcl.Contains(text, request.Text, StringComparison.OrdinalIgnoreCase))
                 return false;
         }
 

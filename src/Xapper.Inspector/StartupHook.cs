@@ -12,6 +12,6 @@ internal static class StartupHook
     /// <summary>앱의 진입점보다 먼저 호출되어 Inspector 를 기동합니다.</summary>
     public static void Initialize()
     {
-        EntryPoint.Initialize("startup-hook");
+        EntryPoint.Initialize(Xapper.Protocol.InspectorStartArguments.WaitForApplication);
     }
 }

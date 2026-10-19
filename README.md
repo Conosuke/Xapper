@@ -60,7 +60,11 @@ Xapper가 인젝션할 수 있는 대상 WPF 애플리케이션의 .NET 런타�
 | .NET 8.0 | O |
 | .NET 7.0 | O |
 | .NET 6.0 | O |
-| .NET Framework 4.x | X |
+| .NET Framework 4.x (4.0~4.8.1, x86·x64) | O |
+| .NET Framework 3.5 이하 | X |
+
+.NET Framework 4.x 는 같은 CLR 4 위의 제자리 업그레이드라서 net462 로 빌드한 Inspector 하나가 4.x 앱 전부를 맡습니다.
+Framework 앱은 기본 설정(AnyCPU, 32비트 우선)으로 32비트 프로세스가 되는 일이 흔한데, 64비트 서버가 그대로 주입합니다.
 
 ### **빌드 요구사항**
 
@@ -96,9 +100,9 @@ Xapper가 인젝션할 수 있는 대상 WPF 애플리케이션의 .NET 런타�
 
 ```
 src/
-├── Xapper.Protocol        IPC 메시지 계약 (net6.0~9.0-windows, WPF 무의존)
-├── Xapper.Injector        네이티브 인젝터 (P/Invoke로 DLL 주입)
-├── Xapper.Inspector       인젝션 라이브러리 (net6.0~9.0-windows 멀티타겟)
+├── Xapper.Protocol        IPC 메시지 계약 (net462, net6.0~9.0-windows, WPF 무의존)
+├── Xapper.Injector        네이티브 인젝터 (P/Invoke로 DLL 주입, 32비트 대상 포함)
+├── Xapper.Inspector       인젝션 라이브러리 (net462, net6.0~9.0-windows 멀티타겟)
 └── Xapper.McpServer       MCP 서버 (stdio transport, 38개 도구)
 tests/
 ├── Xapper.TestApp         샘플 WPF 로그인 폼
@@ -118,7 +122,7 @@ Inspector와 GenericInjector DLL은 McpServer에 **임베디드 리소스로 내
 ### **1. 프로세스 탐색 및 인젝션**
 - `xapper_list_processes` : 실행 중인 WPF 프로세스 목록 조회
 - `xapper_attach` : P/Invoke 네이티브 인젝션으로 대상 프로세스에 Inspector DLL 주입
-- `xapper_launch` : 앱을 직접 띄우면서 Inspector 를 함께 태운다. .NET 런타임의 startup hook(`DOTNET_STARTUP_HOOKS`)이 앱의 진입점보다 먼저 돌므로 주입 절차도, 그 뒤의 고정 2초 대기도 없어 attach 보다 빠르고(TestApp 실측 launch 0.9초 vs attach 2.1~2.8초), 주 창보다 먼저 뜨는 스플래시·로그인 창까지 사정권에 들어온다. 띄운 앱이 활성 세션이 되며 `xapper_detach` 는 연결만 끊는다(앱은 계속 실행). framework-dependent .NET 앱만 지원하므로 .NET Framework 앱은 직접 띄운 뒤 `xapper_attach` 를 사용한다. 두 가지 제약이 있다. 첫째, 환경변수는 대상 앱이 띄우는 자식 프로세스에도 상속되기 때문에, 앱보다 낮은 .NET 버전에서 도는 보조 실행 파일이 있다면 그 프로세스가 기동에 실패한다. 이런 앱에는 launch 대신 attach 를 사용한다. 둘째, 트리밍된 self-contained 빌드는 런타임이 startup hook 기능 자체를 제외하므로 훅이 조용히 로드되지 않고 제한 시간까지 기다린 뒤 실패한다
+- `xapper_launch` : 앱을 직접 띄우면서 Inspector 를 함께 태운다. .NET 런타임의 startup hook(`DOTNET_STARTUP_HOOKS`)이 앱의 진입점보다 먼저 돌므로 주입 절차도, 그 뒤의 고정 2초 대기도 없어 attach 보다 빠르고(TestApp 실측 launch 0.9초 vs attach 2.1~2.8초), 주 창보다 먼저 뜨는 스플래시·로그인 창까지 사정권에 들어온다. 띄운 앱이 활성 세션이 되며 `xapper_detach` 는 연결만 끊는다(앱은 계속 실행). .NET Framework 4.x 앱에는 startup hook 이 없으므로 띄운 뒤 첫 창이 뜨는 즉시 주입한다 — 그 창보다 먼저 지나간 바인딩 오류는 들리지 않는다. 띄운 앱의 표준 입출력은 서버와 분리되므로 앱이 콘솔에 쓰는 내용이 MCP 통신을 깨뜨리지 않는다. .NET 6+ 앱에는 두 가지 제약이 있다. 첫째, 환경변수는 대상 앱이 띄우는 자식 프로세스에도 상속되기 때문에, 앱보다 낮은 .NET 버전에서 도는 보조 실행 파일이 있다면 그 프로세스가 기동에 실패한다. 이런 앱에는 launch 대신 attach 를 사용한다. 둘째, 트리밍된 self-contained 빌드는 런타임이 startup hook 기능 자체를 제외하므로 훅이 조용히 로드되지 않고 제한 시간까지 기다린 뒤 실패한다
 - `xapper_detach` : Named Pipe 연결 해제 및 정리
 - Named Pipe 기반 IPC (4바이트 LE 길이 접두사 + UTF-8 JSON)
 - 응답을 끝까지 읽지 못한 연결은 이후 메시지 경계가 어긋나므로 폐기된다. 다음 호출은 재부착을 요구하는 오류를 낸다

@@ -32,7 +32,7 @@ public sealed class BindingErrorCollector : TraceListener
 
     #region Public Properties
 
-    /// <summary>듣기 시작한 시각(<see cref="Environment.TickCount64"/>). 시작하지 않았으면 null.</summary>
+    /// <summary>듣기 시작한 시각(<see cref="Bcl.TickCount64"/>). 시작하지 않았으면 null.</summary>
     public long? StartedAt { get; private set; }
 
     /// <inheritdoc />
@@ -53,7 +53,7 @@ public sealed class BindingErrorCollector : TraceListener
         var source = PresentationTraceSources.DataBindingSource;
         source.Listeners.Add(this);
         source.Switch.Level = SourceLevels.Error;
-        StartedAt = Environment.TickCount64;
+        StartedAt = Bcl.TickCount64;
     }
 
     /// <summary>모아 둔 오류를 처음 본 순서대로 돌려줍니다.</summary>
@@ -120,11 +120,11 @@ public sealed class BindingErrorCollector : TraceListener
     /// <summary>오류 한 건을 담습니다. UI 스레드에서 불리는 자리이므로 예외를 내지 않는다.</summary>
     private void Record(string? message)
     {
-        if (string.IsNullOrWhiteSpace(message))
+        if (Bcl.IsBlank(message))
             return;
 
         var key = HashCode.Replace(message.Trim(), "");
-        var now = Environment.TickCount64;
+        var now = Bcl.TickCount64;
 
         lock (_gate)
         {
@@ -167,6 +167,6 @@ public sealed class BindingErrorCollector : TraceListener
 /// <summary>같은 바인딩에서 난 오류 묶음.</summary>
 /// <param name="Message">객체 해시를 뺀 오류 문장.</param>
 /// <param name="Count">난 횟수.</param>
-/// <param name="FirstAt">처음 난 시각(<see cref="Environment.TickCount64"/>).</param>
+/// <param name="FirstAt">처음 난 시각(<see cref="Bcl.TickCount64"/>).</param>
 /// <param name="LastAt">마지막으로 난 시각.</param>
 public sealed record BindingErrorRecord(string Message, int Count, long FirstAt, long LastAt);

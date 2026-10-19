@@ -26,9 +26,9 @@ Project Structure:
 
 ```
 src/
-  Xapper.Protocol/      - Shared IPC message contracts (net9.0, no WPF dependency)
-  Xapper.Injector/      - Snoop Injector wrapper (calls InjectorLauncher as subprocess)
-  Xapper.Inspector/     - Injected library (runs inside target WPF app; MinHook.NET for cursor-free input)
+  Xapper.Protocol/      - Shared IPC message contracts (net462 + net6.0~9.0-windows, no WPF dependency)
+  Xapper.Injector/      - Native injector (loads Snoop GenericInjector into the target, x86/x64/ARM64)
+  Xapper.Inspector/     - Injected library (net462 + net6.0~9.0-windows; runs inside target WPF app; MinHook.NET for cursor-free input)
   Xapper.McpServer/     - MCP server (stdio transport, ModelContextProtocol 1.2.0)
 tests/
   Xapper.TestApp/       - Sample WPF login form for testing
@@ -48,6 +48,7 @@ dotnet run --project src/Xapper.McpServer
 3. Technical Conventions
 
 - Target: net9.0-windows (Directory.Build.props)
+- Exception: Xapper.Inspector and Xapper.Protocol also target net462 (one build covers every .NET Framework 4.x app) and net6.0~8.0-windows. Code there must compile on net462: use the `Bcl` helper in Xapper.Inspector for BCL APIs net462 lacks instead of scattering `#if`. .NET Framework 3.5 and older (CLR 2) are out of scope.
 - Language: C# 12
 - IPC: Named Pipes with length-prefixed JSON (4-byte LE length + UTF-8 payload)
 - All UI thread access must go through Dispatcher.InvokeAsync

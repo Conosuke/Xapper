@@ -148,7 +148,7 @@ internal static class DialogAnswerer
     /// </summary>
     private static async Task<IntPtr> WaitForDialogAsync(Func<IntPtr, bool> isWanted, int timeoutMs)
     {
-        var deadline = Environment.TickCount64 + timeoutMs;
+        var deadline = Bcl.TickCount64 + timeoutMs;
         while (true)
         {
             var found = ProcessWindows.Visible().FirstOrDefault(hwnd =>
@@ -158,7 +158,7 @@ internal static class DialogAnswerer
 
             if (found != IntPtr.Zero)
                 return found;
-            if (Environment.TickCount64 >= deadline)
+            if (Bcl.TickCount64 >= deadline)
                 return IntPtr.Zero;
 
             await Task.Delay(PollMs);
@@ -171,7 +171,7 @@ internal static class DialogAnswerer
     /// </summary>
     private static async Task<(bool Closed, IntPtr FollowUp)> WaitClosedAsync(IntPtr dialog, IntPtr followUpOf)
     {
-        var deadline = Environment.TickCount64 + CloseGraceMs;
+        var deadline = Bcl.TickCount64 + CloseGraceMs;
         while (true)
         {
             if (!NativeMethods.IsWindow(dialog) || !NativeMethods.IsWindowVisible(dialog))
@@ -187,7 +187,7 @@ internal static class DialogAnswerer
                     return (false, followUp);
             }
 
-            if (Environment.TickCount64 >= deadline)
+            if (Bcl.TickCount64 >= deadline)
                 return (false, IntPtr.Zero);
 
             await Task.Delay(PollMs);

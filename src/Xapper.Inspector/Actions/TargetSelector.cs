@@ -26,13 +26,13 @@ internal static class TargetSelector
         request = new FindElementRequest();
         error = null;
 
-        if (string.IsNullOrWhiteSpace(target))
+        if (Bcl.IsBlank(target))
         {
             error = "target is empty";
             return false;
         }
 
-        foreach (var part in target.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (var part in target.Split(',').Select(raw => raw.Trim()).Where(trimmed => trimmed.Length > 0))
         {
             var separator = part.IndexOf('=');
             if (separator < 0)

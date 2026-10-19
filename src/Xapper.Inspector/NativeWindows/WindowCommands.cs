@@ -89,10 +89,10 @@ internal static class WindowCommands
     /// <summary>조건이 참이 될 때까지 기다립니다.</summary>
     private static async Task<bool> UntilAsync(Func<bool> condition)
     {
-        var deadline = Environment.TickCount64 + SettleMs;
+        var deadline = Bcl.TickCount64 + SettleMs;
         while (!condition())
         {
-            if (Environment.TickCount64 >= deadline)
+            if (Bcl.TickCount64 >= deadline)
                 return false;
             await Task.Delay(PollMs);
         }

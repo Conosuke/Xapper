@@ -3,6 +3,19 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <UseWPF>true</UseWPF>
+    <TargetFramework />
+    <!-- net48 은 .NET Framework 4.x 앱에 붙는 경로(net462 Inspector, 띄운 뒤 주입)를 실제로 시험하기 위한 빌드다. -->
+    <TargetFrameworks>net9.0-windows;net48</TargetFrameworks>
   </PropertyGroup>
+
+  <!-- .NET Framework 프로젝트의 기본값(AnyCPU, 32비트 우선)을 그대로 따른다. 실제 Framework 앱 다수가 이 설정으로
+       32비트 프로세스가 되므로, 64비트 서버가 32비트 앱에 주입하는 경로를 이 빌드가 시험한다. -->
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net48'">
+    <Prefer32Bit>true</Prefer32Bit>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(TargetFrameworkIdentifier)' == '.NETFramework'">
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
 
 </Project>

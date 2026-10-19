@@ -18,7 +18,7 @@ internal static class ProcessWindows
 
     #region Fields
 
-    private static readonly uint Self = (uint)Environment.ProcessId;
+    private static readonly uint Self = (uint)Bcl.ProcessId;
 
     #endregion
 

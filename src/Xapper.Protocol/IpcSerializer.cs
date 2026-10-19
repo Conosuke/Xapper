@@ -33,7 +33,7 @@ public static class IpcSerializer
     {
         var json = JsonSerializer.SerializeToUtf8Bytes(message, Options);
         var result = new byte[4 + json.Length];
-        BitConverter.TryWriteBytes(result.AsSpan(0, 4), json.Length);
+        WriteLength(result, json.Length);
         json.CopyTo(result, 4);
         return result;
     }
@@ -67,7 +67,7 @@ public static class IpcSerializer
         if (!await TryReadExactlyAsync(stream, lengthBuffer, ct))
             return null;
 
-        var length = BitConverter.ToInt32(lengthBuffer);
+        var length = ReadLength(lengthBuffer);
 
         // 잘못된 길이는 스트림이 어긋났다는 뜻이다. 예외를 던지면 대상 프로세스의 first-chance 핸들러가
         // 그 예외로 앱을 죽일 수 있으므로(결함 2), 던지지 않고 null 로 알려 호출자가 연결을 정리하게 한다.
@@ -96,13 +96,31 @@ public static class IpcSerializer
         var offset = 0;
         while (offset < buffer.Length)
         {
-            var read = await stream.ReadAsync(buffer.AsMemory(offset, buffer.Length - offset), ct);
+            var read = await stream.ReadAsync(buffer, offset, buffer.Length - offset, ct);
             if (read == 0)
                 return false;
             offset += read;
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// 길이 헤더를 리틀 엔디언으로 씁니다. 호스트 바이트 순서를 따르는 BitConverter 와 달리 프로토콜이 정한 순서를
+    /// 명시하고, .NET Framework 에도 있는 연산만 쓴다.
+    /// </summary>
+    private static void WriteLength(byte[] buffer, int length)
+    {
+        buffer[0] = (byte)length;
+        buffer[1] = (byte)(length >> 8);
+        buffer[2] = (byte)(length >> 16);
+        buffer[3] = (byte)(length >> 24);
+    }
+
+    /// <summary>리틀 엔디언 길이 헤더를 읽습니다. <see cref="WriteLength"/> 의 짝.</summary>
+    private static int ReadLength(byte[] buffer)
+    {
+        return buffer[0] | (buffer[1] << 8) | (buffer[2] << 16) | (buffer[3] << 24);
     }
 
     /// <summary>

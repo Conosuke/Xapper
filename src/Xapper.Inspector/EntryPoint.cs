@@ -1,5 +1,8 @@
 using System.IO;
+using System.Reflection;
+#if !NETFRAMEWORK
 using System.Runtime.Loader;
+#endif
 
 namespace Xapper.Inspector;
 
@@ -40,7 +43,7 @@ public static class EntryPoint
                 ? Path.GetDirectoryName(assemblyLocation)
                 : null;
 
-            if (string.IsNullOrEmpty(thisDir))
+            if (thisDir is null || thisDir.Length == 0)
             {
                 thisDir = AppContext.BaseDirectory;
                 Log($"Assembly.Location was empty, using AppContext.BaseDirectory: {thisDir}");
@@ -50,16 +53,9 @@ public static class EntryPoint
                 Log($"Assembly dir: {thisDir}");
             }
 
-            AssemblyLoadContext.Default.Resolving += (ctx, name) =>
-            {
-                var path = Path.Combine(thisDir, name.Name + ".dll");
-                Log($"Resolving: {name.Name} -> {path} (exists={File.Exists(path)})");
-                if (File.Exists(path))
-                    return ctx.LoadFromAssemblyPath(path);
-                return null;
-            };
+            RegisterResolver(thisDir);
 
-            StartServer(string.Equals(args, "startup-hook", StringComparison.Ordinal));
+            StartServer(string.Equals(args, Protocol.InspectorStartArguments.WaitForApplication, StringComparison.Ordinal));
             return 0;
         }
         catch (Exception ex)
@@ -72,6 +68,37 @@ public static class EntryPoint
     #endregion
 
     #region Private Methods
+
+    /// <summary>
+    /// Inspector 옆에 풀린 의존성(Protocol, MinHook, .NET Framework 에서는 System.Text.Json 과 그 의존성)을 찾아 주는
+    /// 리졸버를 등록합니다. 앱 폴더에는 이 파일들이 없으므로 런타임이 못 찾으면 여기로 온다.
+    ///
+    /// .NET Framework 에는 AssemblyLoadContext 가 없어 앱과 같은 AppDomain 을 쓴다. 강력한 이름의 어셈블리는 버전이
+    /// 다르면 나란히 올라가므로, 앱이 다른 버전의 System.Memory 를 이미 들고 있어도 우리 것은 따로 로드된다.
+    /// 같은 버전이면 런타임이 앱의 것을 먼저 돌려주는데, 같은 버전은 같은 내용이라 문제가 없다.
+    /// </summary>
+    /// <param name="thisDir">Inspector DLL 이 있는 디렉터리.</param>
+    private static void RegisterResolver(string thisDir)
+    {
+#if NETFRAMEWORK
+        AppDomain.CurrentDomain.AssemblyResolve += (_, args) =>
+        {
+            var name = new AssemblyName(args.Name).Name;
+            var path = Path.Combine(thisDir, name + ".dll");
+            Log($"Resolving: {args.Name} -> {path} (exists={File.Exists(path)})");
+            return File.Exists(path) ? Assembly.LoadFrom(path) : null;
+        };
+#else
+        AssemblyLoadContext.Default.Resolving += (ctx, name) =>
+        {
+            var path = Path.Combine(thisDir, name.Name + ".dll");
+            Log($"Resolving: {name.Name} -> {path} (exists={File.Exists(path)})");
+            if (File.Exists(path))
+                return ctx.LoadFromAssemblyPath(path);
+            return null;
+        };
+#endif
+    }
 
     /// <summary>
     /// 로그 메시지를 임시 폴더의 로그 파일에 기록합니다.
@@ -90,7 +117,7 @@ public static class EntryPoint
     /// </param>
     private static void StartServer(bool startedBeforeApp)
     {
-        var pipeName = Protocol.IpcPipeNames.ForProcess(Environment.ProcessId);
+        var pipeName = Protocol.IpcPipeNames.ForProcess(Bcl.ProcessId);
         Log($"Starting server on pipe: {pipeName} (startedBeforeApp={startedBeforeApp})");
         // 바인딩 오류는 화면이 처음 열릴 때 나고 끝나므로, 첫 요청을 기다리지 않고 주입되는 즉시 듣기 시작한다.
         var bindingErrors = new Diagnostics.BindingErrorCollector();

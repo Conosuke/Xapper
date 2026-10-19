@@ -21,6 +21,10 @@ app's entry point, so there is no injection step and screens that appear before 
 splash, login - are reachable too. Fall back to `xapper_list_processes` and `xapper_attach` only
 when the app is already running.
 
+A .NET Framework 4.x app is still launched the same way, but it has no startup hook: the inspector
+goes in the moment its first window appears, and the launch response says so. Anything that happened
+before that window - including its binding errors - was not heard.
+
 ## 2. Recall before you look
 
 Call `xapper_screen_recall` **every time the screen changes**, not once at the start of the
@@ -252,7 +256,9 @@ not a fallback for when something looks wrong. Call it:
 Do it in this order:
 
 1. Start the app with `xapper_launch`, not `xapper_attach`: launch hears errors from the very first
-   screen, attach only from the moment it attaches.
+   screen, attach only from the moment it attaches. On a .NET Framework app launch hears them only
+   from its first window on, so when the first window itself is the screen to check, reopen it (or
+   navigate away and back) after launch before trusting "No binding errors".
 2. Call `xapper_binding_errors` with `clear=true` just before opening the screen, so what comes back
    afterwards belongs to that screen.
 3. Open the screen and make it draw what it binds: switch its tabs, expand its rows, select an item,

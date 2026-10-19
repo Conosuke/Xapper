@@ -251,10 +251,10 @@ internal static class SyntheticMouse
     /// <returns>핸들러가 끝났으면(또는 앱이 내려가 기다릴 대상이 없으면) true, 제한 시간이 지나도 처리 중이면 false.</returns>
     internal static async Task<bool> WaitUntilHandledAsync(Dispatcher dispatcher, TimeSpan timeout)
     {
-        var deadline = Environment.TickCount64 + (long)timeout.TotalMilliseconds;
+        var deadline = Bcl.TickCount64 + (long)timeout.TotalMilliseconds;
         while (true)
         {
-            var remaining = deadline - Environment.TickCount64;
+            var remaining = deadline - Bcl.TickCount64;
             if (remaining <= 0)
                 return false;
 

@@ -118,7 +118,7 @@ public sealed class WindowWatcher : IDisposable
         _callback = OnWinEvent;
         var hook = NativeMethods.SetWinEventHook(
             NativeMethods.EVENT_OBJECT_DESTROY, NativeMethods.EVENT_OBJECT_HIDE, IntPtr.Zero, _callback,
-            (uint)Environment.ProcessId, 0, NativeMethods.WINEVENT_OUTOFCONTEXT);
+            (uint)Bcl.ProcessId, 0, NativeMethods.WINEVENT_OUTOFCONTEXT);
 
         _running = hook != IntPtr.Zero;
         ready.Set();

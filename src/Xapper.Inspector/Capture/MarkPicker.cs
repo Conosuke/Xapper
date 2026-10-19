@@ -158,7 +158,7 @@ public static class MarkPicker
 
     /// <summary>비율을 0.0~1.0 으로 자릅니다. 기준 사각형 밖으로 나간 중심점을 그대로 쓰면 조작이 빗나간다.</summary>
     private static double Ratio(double offset, double length)
-        => Math.Round(Math.Clamp(offset / length, 0, 1), 3);
+        => Math.Round(Bcl.Clamp(offset / length, 0, 1), 3);
 
     /// <summary>AutomationId. 읽을 수 없으면 빈 문자열.</summary>
     private static string IdOf(UIElement element)

@@ -100,7 +100,7 @@ public sealed class IpcServer
 
         while (!_cts.IsCancellationRequested)
         {
-            await using var pipe = new NamedPipeServerStream(
+            using var pipe = new NamedPipeServerStream(
                 _pipeName,
                 PipeDirection.InOut,
                 1,
@@ -156,7 +156,7 @@ public sealed class IpcServer
             if (responseBytes.Length > IpcSerializer.MaxPayloadBytes)
                 responseBytes = IpcSerializer.Serialize(TooLargeError(message.Id, responseBytes.Length));
 
-            await pipe.WriteAsync(responseBytes, ct);
+            await pipe.WriteAsync(responseBytes, 0, responseBytes.Length, ct);
             await pipe.FlushAsync(ct);
         }
     }
@@ -565,7 +565,7 @@ public sealed class IpcServer
     {
         var response = new PongResponse
         {
-            ProcessId = Environment.ProcessId,
+            ProcessId = Bcl.ProcessId,
             ProcessName = System.Diagnostics.Process.GetCurrentProcess().ProcessName,
             InspectorBuild = typeof(IpcServer).Assembly.ManifestModule.ModuleVersionId.ToString("N")
         };
@@ -950,7 +950,7 @@ public sealed class IpcServer
         if (keyError is not null)
             return IpcSerializer.CreateError(message.Id, keyError);
 
-        var keyText = string.IsNullOrWhiteSpace(request.Modifiers) ? request.Key : $"{request.Modifiers.Trim()}+{request.Key}";
+        var keyText = Bcl.IsBlank(request.Modifiers) ? request.Key : $"{request.Modifiers.Trim()}+{request.Key}";
         var text = $"{keyText} sent -> {focused} now focused";
         if (modifierPath.Length > 0)
             text += $" ({modifierPath})";
@@ -1365,7 +1365,7 @@ public sealed class IpcServer
         }
 
         // 모드 검증은 문자열 비교뿐이라 UI 스레드가 필요 없다. 잘못된 모드는 예외 대신 여기서 오류로 돌려준다.
-        var mode = string.IsNullOrWhiteSpace(request.Mode) ? ScreenshotModes.Render : request.Mode.Trim();
+        var mode = Bcl.IsBlank(request.Mode) ? ScreenshotModes.Render : request.Mode.Trim();
         var isScreen = mode.Equals(ScreenshotModes.Screen, StringComparison.OrdinalIgnoreCase);
         var isRender = mode.Equals(ScreenshotModes.Render, StringComparison.OrdinalIgnoreCase);
         if (!isScreen && !isRender)
@@ -1465,7 +1465,7 @@ public sealed class IpcServer
         // 물어볼 때마다 다시 훑는다. 방금 뜬 대화상자의 이벤트는 조금 전까지 존재하지도 않았다.
         await EnsureWatchingAsync();
 
-        var now = Environment.TickCount64;
+        var now = Bcl.TickCount64;
         var response = new EventsResponse { Stored = Events.EventWatcher.Log.Count };
 
         foreach (var entry in Events.EventWatcher.Log.Recent(request.Count, request.Filter))
@@ -1497,7 +1497,7 @@ public sealed class IpcServer
             ? IpcSerializer.DeserializePayload<BindingErrorsRequest>(payload)
             : new BindingErrorsRequest();
 
-        var now = Environment.TickCount64;
+        var now = Bcl.TickCount64;
         var records = _bindingErrors.Read(request.Clear, out var overflow);
         var response = new BindingErrorsResponse { Overflow = overflow, CollectingForMs = now - startedAt };
 
@@ -1580,7 +1580,7 @@ public sealed class IpcServer
         var request = IpcSerializer.DeserializePayload<WindowRequest>(payload);
 
         IntPtr hwnd;
-        if (string.IsNullOrWhiteSpace(request.Hwnd))
+        if (Bcl.IsBlank(request.Hwnd))
         {
             hwnd = ProcessWindows.Main();
             if (hwnd == IntPtr.Zero)

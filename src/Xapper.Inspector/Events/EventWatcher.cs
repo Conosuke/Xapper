@@ -133,7 +133,7 @@ public static class EventWatcher
     /// <summary>담아 둘 값어치가 없는 이름인지.</summary>
     internal static bool IsNoise(string name)
     {
-        return Noise.Any(noisy => name.Contains(noisy, StringComparison.Ordinal));
+        return Noise.Any(noisy => Bcl.Contains(name, noisy, StringComparison.Ordinal));
     }
 
     /// <summary>
@@ -147,7 +147,7 @@ public static class EventWatcher
                 return;
 
             Log.Add(new LoggedEvent(
-                Environment.TickCount64,
+                Bcl.TickCount64,
                 args.RoutedEvent?.Name ?? "(unknown)",
                 source.GetType().Name,
                 NameOf(source),

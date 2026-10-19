@@ -212,7 +212,7 @@ internal static class InputSpoof
             return false;
 
         GetWindowThreadProcessId(top, out var pid);
-        return pid == (uint)Environment.ProcessId;
+        return pid == (uint)Bcl.ProcessId;
     }
 
     #endregion
@@ -319,7 +319,7 @@ internal static class InputSpoof
         // 다른 프로세스의 창이 덮고 있으면 대상 창을 답해 WPF 가 마우스를 활성화하게 한다.
         // 같은 프로세스의 창이면 실제 답을 유지한다(호출자가 IsCoveredByOwnWindow 로 미리 걸러 폴백한다).
         GetWindowThreadProcessId(real, out var pid);
-        return pid == (uint)Environment.ProcessId ? real : target;
+        return pid == (uint)Bcl.ProcessId ? real : target;
     }
 
     private static short GetKeyStateHook(int nVirtKey)

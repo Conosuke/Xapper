@@ -136,10 +136,12 @@ public sealed class ProcessTools
         "whenever you can start the app yourself: there is no injection step, so it is faster, and it catches " +
         "the app from its first moment - splash screens and login dialogs that open before the main window. " +
         "The launched app becomes the active session; xapper_detach later disconnects without closing it. " +
-        "Framework-dependent .NET apps only - for .NET Framework, start the app yourself and use xapper_attach. " +
-        "Two things to know: the app's own child processes inherit the hook, so a helper that runs on an OLDER " +
-        ".NET than the app will fail to start - attach instead when the app spawns such helpers; and a trimmed " +
-        "self-contained build silently never loads the hook, so the call ends in a timeout.")]
+        ".NET Framework 4.x apps work too, but have no startup hook: the inspector goes in the moment their first " +
+        "window appears, so binding errors raised before that window are not heard. .NET Framework 3.5 and older " +
+        "are not supported. For .NET 6+ apps, two things to know: the app's own child processes inherit the hook, " +
+        "so a helper that runs on an OLDER .NET than the app will fail to start - attach instead when the app " +
+        "spawns such helpers; and a trimmed self-contained build silently never loads the hook, so the call ends " +
+        "in a timeout.")]
     public async Task<string> Launch(
         [Description("Absolute path to the app's .exe")] string exePath,
         [Description("Command-line arguments to pass to the app")] string? args = null,
@@ -153,10 +155,10 @@ public sealed class ProcessTools
         if (timeoutMs <= 0)
             return $"Error: timeoutMs must be greater than 0 (got {timeoutMs}).";
 
-        string hookDll;
+        LaunchPlan plan;
         try
         {
-            hookDll = _injector.ResolveInspectorDllForExe(exePath);
+            plan = _injector.PlanLaunch(exePath);
         }
         catch (Exception ex) when (ex is InvalidOperationException or FileNotFoundException)
         {
@@ -169,11 +171,19 @@ public sealed class ProcessTools
             // 환경변수를 넘기려면 셸을 거치지 않아야 한다. 작업 디렉터리는 exe 폴더 — WPF 앱이 리소스를
             // 상대 경로로 찾는 것이 보통이다.
             UseShellExecute = false,
-            WorkingDirectory = Path.GetDirectoryName(exePath) ?? Environment.CurrentDirectory
+            WorkingDirectory = Path.GetDirectoryName(exePath) ?? Environment.CurrentDirectory,
+            // 셸을 거치지 않은 자식은 이 서버의 표준 입출력을 물려받는데, 이 서버의 stdin/stdout 은 MCP 통신 그 자체다.
+            // 앱(또는 앱 안에서 도는 주입기)이 콘솔에 한 줄만 써도 JSON-RPC 스트림이 깨지고, 앱이 stdin 을 읽으면
+            // 요청을 가로챈다(실측: GenericInjector 의 로그 한 줄이 stdout 에 섞여 클라이언트가 파싱에 실패했다).
+            // 그래서 셋 다 따로 잇고, 출력은 버린다.
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
         };
         if (!string.IsNullOrWhiteSpace(args))
             startInfo.Arguments = args;
-        startInfo.Environment["DOTNET_STARTUP_HOOKS"] = hookDll;
+        if (plan is LaunchPlan.StartupHook hook)
+            startInfo.Environment["DOTNET_STARTUP_HOOKS"] = hook.InspectorDll;
 
         Process? started;
         try
@@ -188,7 +198,18 @@ public sealed class ProcessTools
         if (started is null)
             return $"Error: could not start {Path.GetFileName(exePath)}.";
 
-        using var process = started;
+        // 이 Process 는 Dispose 하지 않는다: Dispose 는 출력 파이프의 읽는 쪽을 닫는데, 앱은 이 메서드가 끝난 뒤에도
+        // 계속 돌며 출력을 쓸 수 있다. 버려진 객체의 핸들은 SafeHandle 이 거둔다.
+        var process = started;
+
+        // 앱의 출력은 읽어서 버린다. 읽지 않으면 파이프 버퍼가 차는 순간 앱이 콘솔 쓰기에서 멈춘다.
+        // 입력은 바로 닫아, stdin 을 읽는 앱이 기다리지 않고 끝을 보게 한다.
+        process.StandardInput.Close();
+        process.OutputDataReceived += (_, _) => { };
+        process.ErrorDataReceived += (_, _) => { };
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
+
         var name = Path.GetFileNameWithoutExtension(exePath);
         var watch = Stopwatch.StartNew();
         var pipePath = $@"\\.\pipe\{IpcPipeNames.ForProcess(process.Id)}";
@@ -198,6 +219,10 @@ public sealed class ProcessTools
 
         try
         {
+            if (plan is LaunchPlan.InjectAfterStart
+                && await InjectAtFirstWindowAsync(process, name, timeoutCts.Token) is { } injectFailure)
+                return injectFailure;
+
             // 훅은 진입점보다 먼저 돌지만 CLR 기동 자체에 시간이 걸린다. 고정 대기 대신 파이프가 생기는 즉시 붙는다.
             while (!File.Exists(pipePath))
             {
@@ -229,8 +254,13 @@ public sealed class ProcessTools
         }
 
         watch.Stop();
-        return $"Launched process {process.Id} ({name}) in {watch.Elapsed.TotalSeconds:F1} s. " +
-               "The app may still be starting; UI tools wait for its WPF Application.";
+        var launched = $"Launched process {process.Id} ({name}) in {watch.Elapsed.TotalSeconds:F1} s. " +
+                       "The app may still be starting; UI tools wait for its WPF Application.";
+
+        return plan is LaunchPlan.InjectAfterStart afterStart
+            ? launched + $" It runs on {afterStart.Runtime}, so the inspector went in when its first window " +
+              "appeared: binding errors raised before then were not heard."
+            : launched;
     }
 
     /// <summary>
@@ -265,6 +295,41 @@ public sealed class ProcessTools
     #endregion
 
     #region Private Methods
+
+    /// <summary>
+    /// 방금 띄운 .NET Framework 앱의 첫 창이 뜨기를 기다렸다가 Inspector 를 주입합니다.
+    /// startup hook 이 없는 런타임이라 이것이 가장 이른 때다. 주입은 창이 있어야 하므로(<see cref="WpfProcessInjector.Inject"/>)
+    /// 창이 뜨기를 기다리고, 그 창이 Application 보다 먼저 뜨는 스플래시일 수 있어 Inspector 에게 Application 을 기다리게 한다.
+    /// </summary>
+    /// <param name="process">방금 띄운 프로세스.</param>
+    /// <param name="name">오류 문장에 쓸 앱 이름.</param>
+    /// <param name="ct">제한 시간이 걸린 취소 토큰.</param>
+    /// <returns>주입했으면 null, 아니면 실패 문장.</returns>
+    /// <exception cref="OperationCanceledException">창이 뜨기 전에 제한 시간이 지난 경우.</exception>
+    private async Task<string?> InjectAtFirstWindowAsync(Process process, string name, CancellationToken ct)
+    {
+        while (true)
+        {
+            if (process.HasExited)
+                return $"Error: {name} exited with code {process.ExitCode} before its first window appeared.";
+
+            process.Refresh();
+            if (process.MainWindowHandle != IntPtr.Zero)
+                break;
+
+            await Task.Delay(PipePollMs, ct);
+        }
+
+        try
+        {
+            _injector.Inject(process.Id, waitForApplication: true);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return $"[INJECT FAILED] {ex.Message} The app is running (pid {process.Id}).";
+        }
+    }
 
     /// <summary>
     /// 방금 연결한 Inspector 가 이 서버와 같은 빌드인지 핑으로 확인하고, 아니면 연결을 끊고 거절 문장을 돌려줍니다.

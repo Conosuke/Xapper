@@ -25,10 +25,7 @@ public static class ScreenSignature
     /// <returns>16진수 문자열 지문.</returns>
     public static string Of(DependencyObject root)
     {
-        var triples = CollectFrom(root);
-
-        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(string.Join("\n", triples)));
-        return Convert.ToHexString(bytes)[..16].ToLowerInvariant();
+        return Digest(string.Join("\n", CollectFrom(root)));
     }
 
     /// <summary>지문에 들어간 고유 요소의 수. 호출자가 화면 규모를 가늠하는 데 쓴다.</summary>
@@ -36,6 +33,26 @@ public static class ScreenSignature
     public static int CountOf(DependencyObject root)
     {
         return CollectFrom(root).Count;
+    }
+
+    #endregion
+
+    #region Internal Methods
+
+    /// <summary>
+    /// 지문 재료를 SHA-256 으로 줄여 소문자 16진수 앞 16자로 만듭니다.
+    /// 화면 기록의 키라서 어느 TFM 의 Inspector 가 만들든, 예전 빌드가 만든 것과도 같은 문자열이 나와야 한다 —
+    /// 하나라도 다르면 학습해 둔 화면이 모두 처음 보는 화면이 된다.
+    /// </summary>
+    /// <param name="material">줄 단위로 이은 (타입, Name, AutomationId) 조합.</param>
+    /// <returns>16자 소문자 16진수 지문.</returns>
+    internal static string Digest(string material)
+    {
+        byte[] bytes;
+        using (var sha = SHA256.Create())
+            bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(material));
+
+        return BitConverter.ToString(bytes).Replace("-", "")[..16].ToLowerInvariant();
     }
 
     #endregion

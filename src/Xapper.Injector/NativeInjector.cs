@@ -90,14 +90,19 @@ public sealed class NativeInjector
     /// GenericInjector DLL을 로드한 뒤 ExecuteInDefaultAppDomain을 호출하여 타겟 프로세스에서 메서드 실행.
     /// </summary>
     /// <param name="processId">주입 대상 프로세스의 PID.</param>
+    /// <param name="runtime">대상의 런타임. GenericInjector 가 어느 호스팅 API 로 들어갈지를 정한다.</param>
     /// <param name="assemblyPath">주입할 .NET 어셈블리의 전체 경로.</param>
     /// <param name="typeName">호출할 정적 메서드가 포함된 타입의 전체 이름.</param>
-    /// <param name="methodName">호출할 정적 메서드 이름.</param>
+    /// <param name="methodName">호출할 정적 메서드 이름. <c>static int M(string)</c> 꼴이어야 한다.</param>
+    /// <param name="argument">그 메서드에 넘길 문자열.</param>
     /// <exception cref="InvalidOperationException">인젝션 과정에서 오류가 발생한 경우.</exception>
     /// <exception cref="FileNotFoundException">GenericInjector DLL을 찾을 수 없는 경우.</exception>
-    public void Inject(int processId, string assemblyPath, string typeName, string methodName)
+    public void Inject(
+        int processId, TargetRuntime runtime, string assemblyPath, string typeName, string methodName, string argument)
     {
-        var injectorDllPath = ResolveInjectorDll(processId);
+        using var process = Process.GetProcessById(processId);
+        var arch = GetProcessArchitecture(process);
+        var injectorDllPath = ResolveInjectorDll(arch);
 
         if (!File.Exists(injectorDllPath))
             throw new FileNotFoundException(
@@ -110,8 +115,10 @@ public sealed class NativeInjector
 
         try
         {
-            var injectorHandle = LoadDllIntoProcess(hProcess, injectorDllPath);
-            CallExecuteInDefaultAppDomain(hProcess, processId, injectorDllPath, injectorHandle, assemblyPath, typeName, methodName);
+            var loadLibrary = ResolveLoadLibraryW(hProcess, IsWow64(process));
+            var injectorHandle = LoadDllIntoProcess(hProcess, injectorDllPath, loadLibrary);
+            CallExecuteInDefaultAppDomain(
+                hProcess, processId, runtime, injectorDllPath, injectorHandle, assemblyPath, typeName, methodName, argument);
         }
         finally
         {
@@ -126,11 +133,8 @@ public sealed class NativeInjector
     /// <summary>
     /// 타겟 프로세스의 아키텍처에 맞는 GenericInjector DLL 경로를 결정합니다.
     /// </summary>
-    private string ResolveInjectorDll(int processId)
+    private string ResolveInjectorDll(ProcessArchitecture arch)
     {
-        var process = Process.GetProcessById(processId);
-        var arch = GetProcessArchitecture(process);
-
         var dllName = arch switch
         {
             ProcessArchitecture.X64 => "Snoop.GenericInjector.x64.dll",
@@ -177,11 +181,72 @@ public sealed class NativeInjector
     }
 
     /// <summary>
+    /// 대상 프로세스 안의 LoadLibraryW 주소를 구합니다.
+    ///
+    /// 비트 수가 같으면 kernel32 는 모든 프로세스에서 같은 주소에 올라가므로 이 서버의 주소를 그대로 쓴다.
+    /// 32비트(WOW64) 대상에는 32비트 kernel32 가 따로 올라가 있어 그 베이스와 SysWOW64 파일의 RVA 로 계산한다.
+    /// </summary>
+    /// <param name="hProcess">대상 프로세스 핸들.</param>
+    /// <param name="isWow64">대상이 64비트 OS 위의 32비트 프로세스인지.</param>
+    /// <returns>대상 프로세스 기준의 LoadLibraryW 주소.</returns>
+    /// <exception cref="InvalidOperationException">주소를 구하지 못한 경우.</exception>
+    private static IntPtr ResolveLoadLibraryW(IntPtr hProcess, bool isWow64)
+    {
+        if (!isWow64)
+        {
+            var kernel32 = GetModuleHandleW("kernel32.dll");
+            if (kernel32 == IntPtr.Zero)
+                throw new InvalidOperationException("Failed to get kernel32.dll handle");
+
+            var local = GetProcAddress(kernel32, "LoadLibraryW");
+            if (local == IntPtr.Zero)
+                throw new InvalidOperationException("Failed to get LoadLibraryW address");
+
+            return local;
+        }
+
+        var wowDir = Environment.GetFolderPath(Environment.SpecialFolder.SystemX86);
+        return ResolveRemoteExport(hProcess, Path.Combine(wowDir, "kernel32.dll"), "LoadLibraryW");
+    }
+
+    /// <summary>
+    /// 대상 프로세스에 이미 올라가 있는 모듈의 export 주소를 그 모듈의 베이스와 파일의 RVA 로 구합니다.
+    /// export 가 다른 DLL 로 전달(forward)되면 같은 폴더의 그 DLL 에서 한 번 더 찾는다.
+    /// </summary>
+    /// <param name="hProcess">대상 프로세스 핸들.</param>
+    /// <param name="dllPath">대상에 올라간 것과 같은 DLL 파일의 경로.</param>
+    /// <param name="exportName">찾을 함수 이름.</param>
+    /// <returns>대상 프로세스 기준의 함수 주소.</returns>
+    /// <exception cref="InvalidOperationException">모듈이나 export 를 찾지 못한 경우.</exception>
+    private static IntPtr ResolveRemoteExport(IntPtr hProcess, string dllPath, string exportName)
+    {
+        var export = PeExports.Find(dllPath, exportName)
+            ?? throw new InvalidOperationException($"Export '{exportName}' not found in {dllPath}");
+
+        if (export.Forwarder is { } forwarder)
+        {
+            var dot = forwarder.IndexOf('.');
+            if (dot <= 0)
+                throw new InvalidOperationException($"Export '{exportName}' in {dllPath} has a malformed forwarder '{forwarder}'");
+
+            var targetDll = Path.Combine(
+                Path.GetDirectoryName(dllPath) ?? string.Empty, forwarder[..dot] + ".dll");
+            return ResolveRemoteExport(hProcess, targetDll, forwarder[(dot + 1)..]);
+        }
+
+        var remoteBase = FindModuleInProcess(hProcess, dllPath);
+        return new IntPtr((long)remoteBase + export.Rva);
+    }
+
+    /// <summary>
     /// CreateRemoteThread + LoadLibraryW를 사용하여 타겟 프로세스에 DLL을 로드합니다.
     /// 로드 후 EnumProcessModulesEx로 정확한 64비트 HMODULE을 얻습니다.
     /// </summary>
+    /// <param name="hProcess">대상 프로세스 핸들.</param>
+    /// <param name="dllPath">올릴 DLL 경로.</param>
+    /// <param name="loadLibraryAddr">대상 프로세스 기준의 LoadLibraryW 주소.</param>
     /// <returns>로드된 DLL의 모듈 핸들 (HMODULE).</returns>
-    private static IntPtr LoadDllIntoProcess(IntPtr hProcess, string dllPath)
+    private static IntPtr LoadDllIntoProcess(IntPtr hProcess, string dllPath, IntPtr loadLibraryAddr)
     {
         var dllPathBytes = Encoding.Unicode.GetBytes(dllPath + '\0');
         var allocSize = (uint)dllPathBytes.Length;
@@ -196,14 +261,6 @@ public sealed class NativeInjector
             if (!WriteProcessMemory(hProcess, remoteMem, dllPathBytes, allocSize, out _))
                 throw new InvalidOperationException(
                     $"WriteProcessMemory failed: {new Win32Exception(Marshal.GetLastWin32Error()).Message}");
-
-            var kernel32 = GetModuleHandleW("kernel32.dll");
-            if (kernel32 == IntPtr.Zero)
-                throw new InvalidOperationException("Failed to get kernel32.dll handle");
-
-            var loadLibraryAddr = GetProcAddress(kernel32, "LoadLibraryW");
-            if (loadLibraryAddr == IntPtr.Zero)
-                throw new InvalidOperationException("Failed to get LoadLibraryW address");
 
             var hThread = CreateRemoteThread(hProcess, IntPtr.Zero, 0, loadLibraryAddr, remoteMem, 0, out _);
             if (hThread == IntPtr.Zero)
@@ -271,49 +328,41 @@ public sealed class NativeInjector
             }
         }
 
-        throw new InvalidOperationException(
-            $"Module '{dllFileName}' not found in target process after LoadLibraryW succeeded");
+        throw new InvalidOperationException($"Module '{dllFileName}' is not loaded in the target process");
     }
 
     /// <summary>
-    /// 대상 프로세스의 로드된 coreclr.dll 경로에서 .NET 런타임 TFM을 감지합니다.
-    /// 예: Microsoft.NETCore.App\9.0.16 → "net9.0-windows"
+    /// 대상 프로세스에 올라간 런타임 DLL 로 .NET 런타임의 계열과 주 버전을 알아냅니다.
+    /// coreclr.dll 은 버전 폴더(Microsoft.NETCore.App\9.0.16)에서 주 버전을, clr.dll 은 CLR 4, mscorwks.dll 은 CLR 2 다.
     /// </summary>
     /// <param name="processId">대상 프로세스 PID.</param>
-    /// <returns>감지된 TFM (예: "net9.0-windows"). .NET Core가 아니면 null.</returns>
-    public static string? DetectTargetFramework(int processId)
+    /// <returns>감지된 런타임. .NET 프로세스가 아니면 null.</returns>
+    public static TargetRuntime? DetectRuntime(int processId)
     {
-        var process = Process.GetProcessById(processId);
+        using var process = Process.GetProcessById(processId);
+        TargetRuntime? framework = null;
 
         foreach (ProcessModule module in process.Modules)
         {
-            if (module.FileName is null)
-                continue;
+            var moduleName = module.ModuleName;
 
-            if (!module.ModuleName.Equals("coreclr.dll", StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            var dir = Path.GetDirectoryName(module.FileName);
-            if (dir is null)
-                continue;
-
-            var versionDir = Path.GetFileName(dir);
-            if (versionDir is not null && Version.TryParse(versionDir, out var version))
-                return $"net{version.Major}.{version.Minor}-windows";
+            if (moduleName.Equals("coreclr.dll", StringComparison.OrdinalIgnoreCase))
+            {
+                var versionDir = Path.GetFileName(Path.GetDirectoryName(module.FileName));
+                if (versionDir is not null && Version.TryParse(versionDir, out var version))
+                    return new TargetRuntime(RuntimeFamily.Core, version.Major);
+            }
+            else if (moduleName.Equals("clr.dll", StringComparison.OrdinalIgnoreCase))
+            {
+                framework = new TargetRuntime(RuntimeFamily.Framework, 4);
+            }
+            else if (moduleName.Equals("mscorwks.dll", StringComparison.OrdinalIgnoreCase))
+            {
+                framework ??= new TargetRuntime(RuntimeFamily.Framework, 2);
+            }
         }
 
-        return null;
-    }
-
-    /// <summary>
-    /// GenericInjector에 전달할 프레임워크 식별자를 반환합니다.
-    /// GenericInjector는 "net6.0-windows"만 인식하므로 .NET Core 앱은 모두 이 값을 사용.
-    /// </summary>
-    private static string GetGenericInjectorFramework(int processId)
-    {
-        return DetectTargetFramework(processId) is not null
-            ? "net6.0-windows"
-            : "net4.0-windows";
+        return framework;
     }
 
     /// <summary>
@@ -321,14 +370,15 @@ public sealed class NativeInjector
     /// 파라미터 문자열을 타겟 프로세스 메모리에 써넣고 CreateRemoteThread로 실행.
     /// </summary>
     private static void CallExecuteInDefaultAppDomain(
-        IntPtr hProcess, int processId, string injectorDllPath,
-        IntPtr injectorHandle, string assemblyPath, string typeName, string methodName)
+        IntPtr hProcess, int processId, TargetRuntime runtime, string injectorDllPath,
+        IntPtr injectorHandle, string assemblyPath, string typeName, string methodName, string argument)
     {
         // GenericInjector가 기대하는 파라미터 포맷:
-        // "{framework}<|>{assemblyPath}<|>{typeName}<|>{methodName}<|><|>{logFile}"
-        var framework = GetGenericInjectorFramework(processId);
+        // "{framework}<|>{assemblyPath}<|>{typeName}<|>{methodName}<|>{argument}<|>{logFile}"
+        // framework 는 GenericInjector 가 실행기를 고르는 이름이다: "net6.0-windows"(Core) 또는 "net462"(Framework 4).
         var logFile = Path.Combine(Path.GetTempPath(), $"xapper_inject_{processId}.log");
-        var paramString = $"{framework}<|>{assemblyPath}<|>{typeName}<|>{methodName}<|><|>{logFile}";
+        var paramString =
+            $"{runtime.InjectorFramework}<|>{assemblyPath}<|>{typeName}<|>{methodName}<|>{argument}<|>{logFile}";
         var paramBytes = Encoding.Unicode.GetBytes(paramString + '\0');
         var allocSize = (uint)paramBytes.Length;
 
@@ -343,10 +393,9 @@ public sealed class NativeInjector
                 throw new InvalidOperationException(
                     $"WriteProcessMemory for params failed: {new Win32Exception(Marshal.GetLastWin32Error()).Message}");
 
-            // GenericInjector.dll 내부의 ExecuteInDefaultAppDomain export 주소를 구해야 함.
-            // 로컬 프로세스에서 GetProcAddress를 쓸 수 없으므로 (리모트 프로세스에 로드됨),
-            // 로컬에도 같은 DLL을 로드하여 오프셋을 계산한 뒤 리모트 주소를 산출.
-            var funcAddr = GetRemoteExportAddress(hProcess, injectorDllPath, injectorHandle, "ExecuteInDefaultAppDomain");
+            // 리모트에 올라간 GenericInjector 의 export 주소 = 리모트 모듈 베이스 + 파일의 RVA.
+            // 이 서버에 같은 DLL 을 올려 재는 방식은 32비트 대상의 DLL 을 64비트 서버가 올릴 수 없어 쓰지 않는다.
+            var funcAddr = GetRemoteExportAddress(injectorDllPath, injectorHandle, "ExecuteInDefaultAppDomain");
 
             var hThread = CreateRemoteThread(hProcess, IntPtr.Zero, 0, funcAddr, remoteMem, 0, out _);
             if (hThread == IntPtr.Zero)
@@ -376,44 +425,21 @@ public sealed class NativeInjector
     }
 
     /// <summary>
-    /// 로컬에서 DLL을 로드하여 export 함수의 오프셋을 계산하고,
-    /// 리모트 프로세스에서의 실제 주소를 산출합니다.
+    /// 리모트에 이미 올라간 DLL 의 export 주소를 그 모듈 핸들과 파일의 RVA 로 구합니다.
     /// </summary>
-    private static IntPtr GetRemoteExportAddress(IntPtr hProcess, string dllPath, IntPtr remoteModuleHandle, string exportName)
+    /// <param name="dllPath">리모트에 올라간 것과 같은 DLL 파일.</param>
+    /// <param name="remoteModuleHandle">리모트에서의 모듈 핸들(베이스 주소).</param>
+    /// <param name="exportName">찾을 함수 이름.</param>
+    /// <returns>리모트 프로세스 기준의 함수 주소.</returns>
+    /// <exception cref="InvalidOperationException">export 가 없거나 다른 DLL 로 전달되는 경우.</exception>
+    private static IntPtr GetRemoteExportAddress(string dllPath, IntPtr remoteModuleHandle, string exportName)
     {
-        // 로컬 프로세스에도 같은 DLL을 로드
-        var localModule = LoadLibraryExW(dllPath, IntPtr.Zero, DONT_RESOLVE_DLL_REFERENCES);
-        if (localModule == IntPtr.Zero)
-            throw new InvalidOperationException(
-                $"Failed to load {dllPath} locally: {new Win32Exception(Marshal.GetLastWin32Error()).Message}");
+        var export = PeExports.Find(dllPath, exportName);
+        if (export is not { Forwarder: null } found)
+            throw new InvalidOperationException($"Export '{exportName}' not found in {Path.GetFileName(dllPath)}");
 
-        try
-        {
-            var localFuncAddr = GetProcAddress(localModule, exportName);
-            if (localFuncAddr == IntPtr.Zero)
-                throw new InvalidOperationException(
-                    $"Export '{exportName}' not found in {Path.GetFileName(dllPath)}");
-
-            // 오프셋 = 로컬 함수 주소 - 로컬 모듈 베이스
-            var offset = (long)localFuncAddr - (long)localModule;
-
-            // 리모트 함수 주소 = 리모트 모듈 핸들 + 오프셋
-            return new IntPtr((long)remoteModuleHandle + offset);
-        }
-        finally
-        {
-            FreeLibrary(localModule);
-        }
+        return new IntPtr((long)remoteModuleHandle + found.Rva);
     }
-
-    private const uint DONT_RESOLVE_DLL_REFERENCES = 0x00000001;
-
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-    private static extern IntPtr LoadLibraryExW(string lpLibFileName, IntPtr hFile, uint dwFlags);
-
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool FreeLibrary(IntPtr hModule);
 
     #endregion
 }

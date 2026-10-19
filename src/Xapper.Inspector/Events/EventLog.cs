@@ -52,7 +52,7 @@ public sealed class EventLog
         lock (_gate)
             all = [.. _entries];
 
-        var matching = string.IsNullOrWhiteSpace(filter)
+        var matching = Bcl.IsBlank(filter)
             ? all
             : all.Where(entry => Matches(entry, filter.Trim())).ToList();
 
@@ -81,9 +81,9 @@ public sealed class EventLog
     /// </summary>
     private static bool Matches(LoggedEvent entry, string filter)
     {
-        return entry.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)
-            || entry.SourceType.Contains(filter, StringComparison.OrdinalIgnoreCase)
-            || (entry.SourceName?.Contains(filter, StringComparison.OrdinalIgnoreCase) ?? false);
+        return Bcl.Contains(entry.Name, filter, StringComparison.OrdinalIgnoreCase)
+            || Bcl.Contains(entry.SourceType, filter, StringComparison.OrdinalIgnoreCase)
+            || (entry.SourceName is { } sourceName && Bcl.Contains(sourceName, filter, StringComparison.OrdinalIgnoreCase));
     }
 
     #endregion

@@ -17,21 +17,18 @@ public sealed class PayloadExtractor
 
     private const string ResourcePrefix = "Xapper.Payload.";
 
+    /// <summary>
+    /// 내장된 Inspector 빌드들. net462 하나가 .NET Framework 4.x 앱을 모두 맡는다.
+    /// TFM 마다 실린 파일(Inspector, Protocol, MinHook.NET, net462 에서는 System.Text.Json 과 그 의존성)이 다르므로
+    /// 파일 목록은 따로 두지 않고 "Xapper.Payload.{tfm}." 으로 시작하는 리소스를 모두 그 TFM 의 파일로 본다.
+    /// </summary>
     private static readonly string[] SupportedTfms =
     [
+        "net462",
         "net6.0-windows",
         "net7.0-windows",
         "net8.0-windows",
         "net9.0-windows"
-    ];
-
-    private static readonly string[] InspectorFiles =
-    [
-        "Xapper.Inspector.dll",
-        "Xapper.Protocol.dll",
-        "Xapper.Inspector.deps.json",
-        // 대상 프로세스 안에서 user32 를 후킹해 커서 없이 클릭·드래그하기 위한 인라인 후킹 라이브러리.
-        "MinHook.NET.dll"
     ];
 
     private static readonly string[] GenericInjectorFiles =
@@ -103,13 +100,18 @@ public sealed class PayloadExtractor
             ExtractResource(assembly, name, _extractionDir, name);
 
         // Inspector DLL → TFM별 하위 디렉토리
+        var resourceNames = assembly.GetManifestResourceNames();
         foreach (var tfm in SupportedTfms)
         {
             var tfmDir = Path.Combine(_extractionDir, tfm);
             Directory.CreateDirectory(tfmDir);
 
-            foreach (var name in InspectorFiles)
-                ExtractResource(assembly, $"{tfm}.{name}", tfmDir, name);
+            var tfmPrefix = $"{ResourcePrefix}{tfm}.";
+            foreach (var resourceName in resourceNames.Where(n => n.StartsWith(tfmPrefix, StringComparison.Ordinal)))
+            {
+                var fileName = resourceName[tfmPrefix.Length..];
+                ExtractResource(assembly, $"{tfm}.{fileName}", tfmDir, fileName);
+            }
         }
     }
 

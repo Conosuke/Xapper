@@ -6,7 +6,7 @@ namespace Xapper.Inspector.Events;
 /// 요소 참조를 들고 있으면 버퍼가 앱의 수명을 늘린다. 화면에서 사라진 행과 닫힌 대화상자가 기록 때문에
 /// 살아 있게 되므로, 일어나는 그 자리에서 문자열로 바꾸어 담는다.
 /// </summary>
-/// <param name="At">일어난 시각. <see cref="Environment.TickCount64"/> 기준이며, 앞뒤를 가르는 데만 쓴다.</param>
+/// <param name="At">일어난 시각. <see cref="Bcl.TickCount64"/> 기준이며, 앞뒤를 가르는 데만 쓴다.</param>
 /// <param name="Name">이벤트 이름. 예: SelectionChanged.</param>
 /// <param name="SourceType">이벤트를 낸 요소의 타입 이름. 예: GridControl.</param>
 /// <param name="SourceName">그 요소의 자동화 ID 또는 x:Name. 둘 다 없으면 null.</param>

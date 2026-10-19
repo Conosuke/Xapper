@@ -16,12 +16,12 @@ internal static class WaitUntil
     /// <param name="poll">조건을 다시 묻는 간격.</param>
     public static async Task<bool> ReadyAsync(Func<bool> ready, TimeSpan timeout, TimeSpan poll)
     {
-        var deadline = Environment.TickCount64 + (long)timeout.TotalMilliseconds;
+        var deadline = Bcl.TickCount64 + (long)timeout.TotalMilliseconds;
         while (true)
         {
             if (ready())
                 return true;
-            if (Environment.TickCount64 >= deadline)
+            if (Bcl.TickCount64 >= deadline)
                 return false;
 
             await Task.Delay(poll);

@@ -89,4 +89,17 @@ public class ScreenSignatureTests
     {
         StaThread.Run(() => Assert.False(string.IsNullOrEmpty(ScreenSignature.Of(Tree()))));
     }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("Button|btnLogin|\nTextBox|txtUsername|User")]
+    public void Digest_KeepsTheFormatEarlierBuildsWrote(string material)
+    {
+        // 지문은 저장된 화면 기록의 키다. net462 에 없는 API 를 걷어 내며 계산을 바꿨으므로, 예전 식
+        // (Convert.ToHexString(SHA256.HashData(..))[..16] 소문자)과 같은 값이 나오는지 고정한다.
+        var earlier = Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(material)))[..16].ToLowerInvariant();
+
+        Assert.Equal(earlier, ScreenSignature.Digest(material));
+    }
 }

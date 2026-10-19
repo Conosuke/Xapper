@@ -73,4 +73,40 @@ public class LaunchTargetFrameworkTests : IDisposable
 
         Assert.Null(LaunchTargetFramework.MajorVersionOf(exe));
     }
+
+    [Fact]
+    public void RuntimeOf_PrefersTheRuntimeConfig()
+    {
+        var exe = WriteApp("""{"runtimeOptions":{"tfm":"net8.0"}}""");
+
+        Assert.Equal(new TargetRuntime(RuntimeFamily.Core, 8), LaunchTargetFramework.RuntimeOf(exe));
+    }
+
+    [Theory]
+    [InlineData("v4.0.30319", 4)]
+    [InlineData("v2.0.50727", 2)]
+    public void RuntimeOf_ReadsAFrameworkExeFromItsMetadataVersion(string metadataVersion, int expectedClr)
+    {
+        // .NET Framework 앱에는 runtimeconfig.json 이 없고, exe 의 메타데이터가 CLR 세대를 말한다.
+        var exe = Path.Combine(_directory, "Legacy.exe");
+        ManagedImage.Write(exe, metadataVersion);
+
+        Assert.Equal(new TargetRuntime(RuntimeFamily.Framework, expectedClr), LaunchTargetFramework.RuntimeOf(exe));
+    }
+
+    [Fact]
+    public void RuntimeOf_ANativeExeIsUnknown()
+    {
+        // .NET (Core) 의 apphost 나 단일 파일 앱처럼 메타데이터가 없는 exe 는 Framework 앱으로 오인하지 않는다.
+        Assert.Null(LaunchTargetFramework.RuntimeOf(Path.Combine(Environment.SystemDirectory, "notepad.exe")));
+    }
+
+    [Fact]
+    public void RuntimeOf_AnUnreadableFileIsUnknown()
+    {
+        var exe = Path.Combine(_directory, "Empty.exe");
+        File.WriteAllText(exe, "");
+
+        Assert.Null(LaunchTargetFramework.RuntimeOf(exe));
+    }
 }

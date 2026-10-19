@@ -24,7 +24,7 @@ internal static class ModifierParser
         modifiers = ModifierKeys.None;
         error = null;
 
-        if (string.IsNullOrWhiteSpace(text))
+        if (Bcl.IsBlank(text))
             return true;
 
         var result = ModifierKeys.None;
