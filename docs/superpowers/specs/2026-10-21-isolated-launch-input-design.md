@@ -2,7 +2,8 @@
 
 Date: 2026-10-21
 
-Status: Design prepared for user review. Product implementation has not started.
+Status: Approved by the user on 2026-10-21. Product implementation awaits
+implementation-plan review.
 
 ## Intent and scope
 
