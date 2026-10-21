@@ -146,6 +146,7 @@ public sealed class ProcessTools
         [Description("Absolute path to the app's .exe")] string exePath,
         [Description("Command-line arguments to pass to the app")] string? args = null,
         [Description("Timeout in ms to wait for the app's inspector to come up (default 15000)")] int timeoutMs = 15000,
+        [Description("Launch on an unseen isolated desktop (default false). Ask once per task whether the user wants isolated or visible testing.")] bool isolated = false,
         CancellationToken ct = default)
     {
         if (!File.Exists(exePath))
@@ -184,11 +185,23 @@ public sealed class ProcessTools
             startInfo.Arguments = args;
         if (plan is LaunchPlan.StartupHook hook)
             startInfo.Environment["DOTNET_STARTUP_HOOKS"] = hook.InspectorDll;
+        startInfo.Environment[IsolatedDesktopEnvironment.Variable] = isolated ? "1" : "0";
 
         Process? started;
+        IsolatedDesktopApp? isolatedApp = null;
         try
         {
-            started = Process.Start(startInfo);
+            if (isolated)
+            {
+                var environment = new Dictionary<string, string> { [IsolatedDesktopEnvironment.Variable] = "1" };
+                if (plan is LaunchPlan.StartupHook isolatedHook)
+                    environment["DOTNET_STARTUP_HOOKS"] = isolatedHook.InspectorDll;
+                isolatedApp = IsolatedDesktopApp.Start(IsolatedDesktopApp.NextDesktopName(), exePath, args,
+                    startInfo.WorkingDirectory, environment);
+                started = isolatedApp.Process;
+            }
+            else
+                started = Process.Start(startInfo);
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
@@ -204,15 +217,23 @@ public sealed class ProcessTools
 
         // 앱의 출력은 읽어서 버린다. 읽지 않으면 파이프 버퍼가 차는 순간 앱이 콘솔 쓰기에서 멈춘다.
         // 입력은 바로 닫아, stdin 을 읽는 앱이 기다리지 않고 끝을 보게 한다.
-        process.StandardInput.Close();
-        process.OutputDataReceived += (_, _) => { };
-        process.ErrorDataReceived += (_, _) => { };
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
+        if (!isolated)
+        {
+            process.StandardInput.Close();
+            process.OutputDataReceived += (_, _) => { };
+            process.ErrorDataReceived += (_, _) => { };
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+        }
 
         var name = Path.GetFileNameWithoutExtension(exePath);
         var watch = Stopwatch.StartNew();
-        var pipePath = $@"\\.\pipe\{IpcPipeNames.ForProcess(process.Id)}";
+        var pid = process.Id;
+        var desktopName = isolatedApp?.DesktopName;
+        var transferred = false;
+        var closed = isolated
+            ? " The app was closed because an app on an isolated desktop cannot be reached later with xapper_attach."
+            : "";
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(timeoutMs);
@@ -220,42 +241,55 @@ public sealed class ProcessTools
         try
         {
             if (plan is LaunchPlan.InjectAfterStart
-                && await InjectAtFirstWindowAsync(process, name, timeoutCts.Token) is { } injectFailure)
-                return injectFailure;
+                && await InjectAtFirstWindowAsync(process, name, timeoutCts.Token, isolatedApp) is { } injectFailure)
+                return injectFailure + closed;
 
             // 훅은 진입점보다 먼저 돌지만 CLR 기동 자체에 시간이 걸린다. 고정 대기 대신 파이프가 생기는 즉시 붙는다.
-            while (!File.Exists(pipePath))
+            while (!Directory.EnumerateFiles(@"\\.\pipe\", IpcPipeNames.ForProcess(pid)).Any())
             {
                 if (process.HasExited)
-                    return $"Error: {name} exited with code {process.ExitCode} before the inspector came up.";
+                    return $"Error: {name} exited with code {process.ExitCode} before the inspector came up." + closed;
 
                 await Task.Delay(PipePollMs, timeoutCts.Token);
             }
 
-            await _sessionManager.AttachAsync(process.Id, timeoutCts.Token);
+            await _sessionManager.AttachAsync(pid, timeoutCts.Token);
+            if (isolatedApp is not null)
+            {
+                _sessionManager.OwnIsolated(isolatedApp);
+                transferred = true;
+                isolatedApp = null;
+            }
 
             // 이 서버가 방금 넣은 훅이라 대개 같은 빌드다. 그래도 같은 판정을 거쳐야 attach 와 말이 어긋나지 않는다.
-            if (await RefuseOtherBuildAsync(process.Id, timeoutCts.Token) is { } refusal)
-                return refusal;
+            if (await RefuseOtherBuildAsync(pid, timeoutCts.Token) is { } refusal)
+                return refusal + closed;
         }
         catch (OperationCanceledException)
         {
+            if (isolated && transferred) await _sessionManager.DetachAsync(pid);
             // 바깥 토큰이 취소된 것과 제한 시간이 지난 것은 원인이 다르다. 둘을 같은 문장으로 알리면
             // 호출자가 있지도 않은 기동 문제를 찾아 나서게 된다.
             if (ct.IsCancellationRequested)
-                return $"Cancelled while waiting for the inspector in {name} (pid {process.Id}). The app is running.";
+                return $"Cancelled while waiting for the inspector in {name} (pid {pid})." + (isolated ? closed : " The app is running.");
 
-            return $"Error: the inspector in {name} (pid {process.Id}) did not come up within {timeoutMs} ms. " +
-                   "The app is running - you can retry with xapper_attach.";
+            return $"Error: the inspector in {name} (pid {pid}) did not come up within {timeoutMs} ms." +
+                   (isolated ? closed : " The app is running - you can retry with xapper_attach.");
         }
         catch (Exception ex)
         {
-            return $"Error: connecting to {name} (pid {process.Id}) failed ({ex.Message}).";
+            // Attach may have succeeded just before ownership transfer or build validation failed.
+            if (isolated && _sessionManager.ActiveProcessId == pid) await _sessionManager.DetachAsync(pid);
+            return $"Error: connecting to {name} (pid {pid}) failed ({ex.Message})." + closed;
         }
+        finally { isolatedApp?.Dispose(); }
 
         watch.Stop();
         var launched = $"Launched process {process.Id} ({name}) in {watch.Elapsed.TotalSeconds:F1} s. " +
                        "The app may still be starting; UI tools wait for its WPF Application.";
+        if (isolated)
+            launched += $" It is on isolated desktop {desktopName}: its windows are not on the person's screen. " +
+                        "Use render screenshots; detach or server exit closes this app and its children.";
 
         return plan is LaunchPlan.InjectAfterStart afterStart
             ? launched + $" It runs on {afterStart.Runtime}, so the inspector went in when its first window " +
@@ -271,6 +305,8 @@ public sealed class ProcessTools
         [Description("Process ID (optional, defaults to active session)")] int? pid = null,
         CancellationToken ct = default)
     {
+        var targetPid = pid ?? _sessionManager.ActiveProcessId;
+        var wasIsolated = targetPid is { } ownedPid && _sessionManager.IsIsolated(ownedPid);
         try
         {
             await _sessionManager.DetachAsync(pid, ct);
@@ -286,6 +322,9 @@ public sealed class ProcessTools
         // 세션이 끝나면 조작도 끝난 것이다. 알림이 남아 사람이 헛되이 기다리지 않게 내린다 — 분리가 거절된
         // 경우(다른 pid)는 세션이 살아 있으므로 그대로 둔다.
         await _notice.HideAsync(ct);
+
+        if (wasIsolated)
+            return $"Detached from process {targetPid}; the isolated app and its children were closed.";
 
         return pid.HasValue
             ? $"Detached from process {pid}."
@@ -306,15 +345,18 @@ public sealed class ProcessTools
     /// <param name="ct">제한 시간이 걸린 취소 토큰.</param>
     /// <returns>주입했으면 null, 아니면 실패 문장.</returns>
     /// <exception cref="OperationCanceledException">창이 뜨기 전에 제한 시간이 지난 경우.</exception>
-    private async Task<string?> InjectAtFirstWindowAsync(Process process, string name, CancellationToken ct)
+    private async Task<string?> InjectAtFirstWindowAsync(Process process, string name, CancellationToken ct,
+        IsolatedDesktopApp? isolatedApp = null)
     {
+        var window = IntPtr.Zero;
         while (true)
         {
             if (process.HasExited)
                 return $"Error: {name} exited with code {process.ExitCode} before its first window appeared.";
 
             process.Refresh();
-            if (process.MainWindowHandle != IntPtr.Zero)
+            window = isolatedApp is not null ? isolatedApp.FindVisibleWindow() : process.MainWindowHandle;
+            if (window != IntPtr.Zero)
                 break;
 
             await Task.Delay(PipePollMs, ct);
@@ -322,12 +364,15 @@ public sealed class ProcessTools
 
         try
         {
-            _injector.Inject(process.Id, waitForApplication: true);
+            if (isolatedApp is not null)
+                _injector.InjectLaunched(process.Id, window);
+            else
+                _injector.Inject(process.Id, waitForApplication: true);
             return null;
         }
         catch (Exception ex)
         {
-            return $"[INJECT FAILED] {ex.Message} The app is running (pid {process.Id}).";
+            return $"[INJECT FAILED] {ex.Message}" + (isolatedApp is null ? $" The app is running (pid {process.Id})." : $" (pid {process.Id}).");
         }
     }
 
