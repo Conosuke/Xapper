@@ -107,11 +107,14 @@ public sealed class IpcServer
                 PipeTransmissionMode.Byte,
                 PipeOptions.Asynchronous);
 
-            await pipe.WaitForConnectionAsync(_cts.Token);
-
             try
             {
+                await pipe.WaitForConnectionAsync(_cts.Token);
                 await HandleConnection(pipe, _cts.Token);
+            }
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested)
+            {
+                break;
             }
             catch (Exception ex)
             {
@@ -1604,7 +1607,7 @@ public sealed class IpcServer
         IntPtr hwnd;
         if (Bcl.IsBlank(request.Hwnd))
         {
-            hwnd = ProcessWindows.Main();
+            hwnd = await Application.Current.Dispatcher.InvokeAsync(ProcessWindows.Main);
             if (hwnd == IntPtr.Zero)
                 return IpcSerializer.CreateError(message.Id, "The app has no window to act on yet.");
         }

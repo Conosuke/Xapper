@@ -311,7 +311,7 @@ public sealed class ProcessTools
         {
             await _sessionManager.DetachAsync(pid, ct);
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException) when (targetPid is null)
         {
             // DetachAsync 는 활성 세션이 없을 때만 이 예외를 던진다 — 이미 분리된 상태이므로 오류가 아니다.
             // (다른 예외는 삼키지 않는다: 연결 정리가 실제로 실패한 것을 성공으로 위장하면 세션이 어긋난 채 남는다.)

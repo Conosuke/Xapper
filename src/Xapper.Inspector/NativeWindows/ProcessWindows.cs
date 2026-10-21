@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Windows;
+using System.Windows.Interop;
 
 namespace Xapper.Inspector.NativeWindows;
 
@@ -69,9 +71,12 @@ internal static class ProcessWindows
     /// </summary>
     public static IntPtr Main()
     {
-        using var process = Process.GetCurrentProcess();
-        var main = process.MainWindowHandle;
-        return IsOwn(main) ? main : Visible().FirstOrDefault(hwnd => Describe(hwnd)?.Kind == "window");
+        // The caller dispatches to the Application's UI thread; native glow windows are not its MainWindow.
+        if (Application.Current?.MainWindow is { } window
+            && PresentationSource.FromVisual(window) is HwndSource source && IsOwn(source.Handle))
+            return source.Handle;
+        return Visible().FirstOrDefault(hwnd => Describe(hwnd) is { Kind: "window" } description
+            && !string.IsNullOrWhiteSpace(description.Title));
     }
 
     /// <summary>핸들을 응답에 쓰는 모양으로. 예: 0x1A2B.</summary>

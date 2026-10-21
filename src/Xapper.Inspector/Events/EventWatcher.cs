@@ -24,6 +24,7 @@ public static class EventWatcher
     [
         "MouseMove",
         "QueryCursor",
+        "CanExecute",
         "GiveFeedback",
         "DragOver",
         "MouseEnter",

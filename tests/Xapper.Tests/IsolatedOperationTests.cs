@@ -4,6 +4,8 @@ using Xapper.Inspector.Actions;
 using Xapper.McpServer;
 using Xapper.McpServer.Infrastructure;
 using Xapper.McpServer.Tools;
+using Xapper.Protocol;
+using Xapper.Protocol.Messages.Responses;
 
 namespace Xapper.Tests;
 
@@ -12,6 +14,45 @@ namespace Xapper.Tests;
 public sealed class IsolatedOperationTests
 {
     #region Tests
+
+    [Theory]
+    [InlineData(false, "screen", 1)]
+    [InlineData(true, "render", 0)]
+    public async Task ScriptFailure_CapturesTheCorrectDesktopAndKeepsIsolatedNoticesInvisible(bool isolated, string expectedMode, int expectedNotices)
+    {
+        var exe = isolated ? WindowsTestApps.Find("Xapper.TestApp") : "";
+        using var app = isolated ? IsolatedDesktopApp.Start(IsolatedDesktopApp.NextDesktopName(), exe, null,
+            Path.GetDirectoryName(exe) ?? ".", new Dictionary<string, string> { ["DOTNET_STARTUP_HOOKS"] = "" }) : null;
+        var pid = app?.Process.Id ?? FakeInspector.NextProcessId();
+        await using var pipe = FakeInspector.Create(pid);
+        var accepting = pipe.WaitForConnectionAsync();
+        await using var sessions = new SessionManager();
+        await sessions.AttachAsync(pid);
+        await accepting;
+        if (app is not null) sessions.OwnIsolated(app);
+        var responding = Task.Run(async () =>
+        {
+            using var deadline = new CancellationTokenSource(10000);
+            var request = await IpcSerializer.DeserializeAsync(pipe, deadline.Token);
+            Assert.NotNull(request);
+            Assert.Equal("screenshot", request.Method);
+            Assert.Equal(expectedMode, request.Payload?.GetProperty("mode").GetString());
+            await pipe.WriteAsync(IpcSerializer.Serialize(IpcSerializer.CreateResponse(request.Id, new ScreenshotResponse
+            {
+                Width = 1, Height = 1, Base64Png = Convert.ToBase64String([1, 2, 3])
+            })), deadline.Token);
+        });
+        var notice = new TestOperatorNotice();
+        var result = await new RunTools(sessions, notice).Run("xapper.notice.show('test'); fail('expected failure');");
+        await responding;
+        Assert.StartsWith("FAIL", result);
+        Assert.Equal(expectedNotices, notice.ShowCount);
+        var prefix = "screenshot: ";
+        var path = result.Split('\n').FirstOrDefault(line => line.StartsWith(prefix, StringComparison.Ordinal))?[prefix.Length..].Trim();
+        Assert.NotNull(path);
+        try { Assert.Equal(new byte[] { 1, 2, 3 }, await File.ReadAllBytesAsync(path)); }
+        finally { File.Delete(path); }
+    }
 
     [Fact]
     public void DirectRealClick_RefusesBeforeCoordinateOrForegroundSideEffects()

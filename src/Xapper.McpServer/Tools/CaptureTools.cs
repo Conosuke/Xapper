@@ -5,6 +5,7 @@ using ModelContextProtocol.Server;
 using Xapper.McpServer.Infrastructure;
 using Xapper.Protocol;
 using Xapper.Protocol.Messages.Responses;
+using Xapper.McpServer.Ipc;
 
 namespace Xapper.McpServer.Tools;
 
@@ -75,7 +76,12 @@ public sealed class CaptureTools
         if (maxWidth is <= 0)
             return [new TextContentBlock { Text = "Error: maxWidth must be greater than 0. Omit it to get the image at full size." }];
 
-        var client = _sessionManager.GetActive();
+        InspectorClient client;
+        try { client = _sessionManager.GetActive(); }
+        catch (InvalidOperationException ex)
+        {
+            return [new TextContentBlock { Text = $"Error: {ex.Message}" }];
+        }
         var response = await client.ScreenshotAsync(@ref, maxWidth, mode, annotate, ct);
 
         if (response.Type == "error")
