@@ -659,6 +659,13 @@ public sealed class IpcServer
         var withMods = modifiers == ModifierKeys.None ? "" : $" with {request.Modifiers?.Trim()}";
         var what = $"The click on ref={elementRef}";
 
+        if (!request.X.HasValue && !request.Y.HasValue
+            && !await element.Dispatcher.InvokeAsync(() => ClickAction.HasEventPath(element)))
+        {
+            request.X = .5;
+            request.Y = .5;
+        }
+
         // 좌표 클릭: 먼저 후킹 경로로 실제 커서 없이 시도한다. 좌표 변환과 창 핸들은 UI 스레드에서 구하고,
         // WM 메시지 전송은 UI 스레드 밖에서(대상 창으로 크로스스레드) 돌린다.
         if (request.X.HasValue && request.Y.HasValue)

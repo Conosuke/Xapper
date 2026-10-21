@@ -13,6 +13,7 @@ namespace Xapper.Tests;
 /// 접근성 경로는 마우스 이벤트를 전혀 만들지 않으므로, 마우스 핸들러에 의존하는 요소는
 /// 아무 일도 일어나지 않은 채 성공으로 보고될 수 있었다.
 /// </summary>
+[Collection(DesktopWindowCollection.Name)]
 public class ClickPathTests
 {
     #region Helpers
@@ -52,7 +53,7 @@ public class ClickPathTests
     }
 
     [Fact]
-    public void Click_OnElementWithOnlyMouseHandlers_FallsBackToMouseEventsAndSaysSo()
+    public void Click_OnDetachedElement_DoesNotPretendDirectEventsAreARealClick()
     {
         StaThread.Run(() =>
         {
@@ -62,8 +63,34 @@ public class ClickPathTests
 
             var outcome = ClickAction.Execute(border);
 
-            Assert.Contains("simulated routed mouse events", outcome.Path);
-            Assert.True(released);
+            Assert.NotNull(outcome.Error);
+            Assert.False(released);
+        });
+    }
+
+    [Fact]
+    public void Click_WithoutEventPath_UsesSyntheticCenterAndReachesParent()
+    {
+        StaThread.Run(() =>
+        {
+            var child = new Border { Background = System.Windows.Media.Brushes.White };
+            var parent = new Grid();
+            parent.Children.Add(child);
+            var selected = false;
+            parent.PreviewMouseDown += (_, _) => selected = true;
+            var window = new Window { Content = parent, Width = 180, Height = 120, ShowActivated = false };
+            try
+            {
+                window.Show();
+                window.UpdateLayout();
+                PumpDispatcher();
+                Assert.False(ClickAction.HasEventPath(child));
+                var outcome = ClickAction.Execute(child);
+                Assert.Null(outcome.Error);
+                Assert.Contains("synthetic mouse input", outcome.Path);
+                Assert.True(selected);
+            }
+            finally { window.Close(); }
         });
     }
 }
