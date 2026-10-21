@@ -46,7 +46,7 @@ public sealed class RecordTools
         [Description("Frames per second, 1-30 (default 10)")] int fps = 10,
         CancellationToken ct = default)
     {
-        if (_sessionManager.ActiveProcessId is { } pid && _sessionManager.IsIsolated(pid))
+        if (_sessionManager.ActiveSession is { Isolated: true })
             return "Error: desktop recording cannot capture an app on an isolated desktop; it would record " +
                    "the person's unrelated desktop instead. Use render screenshots to inspect this app.";
         return await _recorder.StartAsync(path, fps, ct)

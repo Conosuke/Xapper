@@ -3,6 +3,7 @@ using System.Diagnostics;
 using ModelContextProtocol.Server;
 using Xapper.Injector;
 using Xapper.McpServer.Infrastructure;
+using Xapper.McpServer.Ipc;
 using Xapper.Protocol;
 using Xapper.Protocol.Messages.Responses;
 
@@ -102,9 +103,10 @@ public sealed class ProcessTools
             }
         }
 
+        InspectorClient attached;
         try
         {
-            await _sessionManager.AttachAsync(pid, linkedCts.Token);
+            attached = await _sessionManager.AttachAsync(pid, linkedCts.Token);
         }
         catch (Exception ex)
         {
@@ -113,7 +115,7 @@ public sealed class ProcessTools
 
         try
         {
-            if (await RefuseOtherBuildAsync(pid, linkedCts.Token) is { } refusal)
+            if (await RefuseOtherBuildAsync(pid, attached, linkedCts.Token) is { } refusal)
                 return refusal;
         }
         catch (Exception ex)
@@ -236,7 +238,6 @@ public sealed class ProcessTools
         var watch = Stopwatch.StartNew();
         var pid = process.Id;
         var desktopName = isolatedApp?.DesktopName;
-        var transferred = false;
         var closed = isolated
             ? " The app was closed because an app on an isolated desktop cannot be reached later with xapper_attach."
             : "";
@@ -259,21 +260,14 @@ public sealed class ProcessTools
                 await Task.Delay(PipePollMs, timeoutCts.Token);
             }
 
-            await _sessionManager.AttachAsync(pid, timeoutCts.Token);
-            if (isolatedApp is not null)
-            {
-                _sessionManager.OwnIsolated(isolatedApp);
-                transferred = true;
-                isolatedApp = null;
-            }
-
-            // 이 서버가 방금 넣은 훅이라 대개 같은 빌드다. 그래도 같은 판정을 거쳐야 attach 와 말이 어긋나지 않는다.
-            if (await RefuseOtherBuildAsync(pid, timeoutCts.Token) is { } refusal)
+            var refusal = await AttachLaunchedAsync(pid, isolatedApp, timeoutCts.Token);
+            isolatedApp = null;
+            if (refusal is not null)
                 return refusal + closed;
         }
         catch (OperationCanceledException)
         {
-            if (isolated && transferred) await _sessionManager.DetachAsync(pid);
+            if (isolated) await _sessionManager.DetachAsync(pid);
             // 바깥 토큰이 취소된 것과 제한 시간이 지난 것은 원인이 다르다. 둘을 같은 문장으로 알리면
             // 호출자가 있지도 않은 기동 문제를 찾아 나서게 된다.
             if (ct.IsCancellationRequested)
@@ -285,13 +279,13 @@ public sealed class ProcessTools
         catch (Exception ex)
         {
             // Attach may have succeeded just before ownership transfer or build validation failed.
-            if (isolated && _sessionManager.ActiveProcessId == pid) await _sessionManager.DetachAsync(pid);
+            if (isolated) await _sessionManager.DetachAsync(pid);
             return $"Error: connecting to {name} (pid {pid}) failed ({ex.Message})." + closed;
         }
         finally { isolatedApp?.Dispose(); }
 
         watch.Stop();
-        var launched = $"Launched process {process.Id} ({name}) in {watch.Elapsed.TotalSeconds:F1} s. " +
+        var launched = $"Launched process {pid} ({name}) in {watch.Elapsed.TotalSeconds:F1} s. " +
                        "The app may still be starting; UI tools wait for its WPF Application.";
         if (isolated)
             launched += $" It is on isolated desktop {desktopName}: its windows are not on the person's screen. " +
@@ -341,6 +335,20 @@ public sealed class ProcessTools
 
     #region Private Methods
 
+    /// <summary>Connects and validates the launched identity; a concurrent active-session change cannot divert cleanup.</summary>
+    internal async Task<string?> AttachLaunchedAsync(int pid, IsolatedDesktopApp? app, CancellationToken ct)
+    {
+        var client = app is null
+            ? await _sessionManager.AttachAsync(pid, ct)
+            : await _sessionManager.AttachIsolatedAsync(app, ct);
+        try { return await RefuseOtherBuildAsync(pid, client, ct); }
+        catch
+        {
+            if (app is not null) await _sessionManager.DetachAsync(pid);
+            throw;
+        }
+    }
+
     /// <summary>
     /// 방금 띄운 .NET Framework 앱의 첫 창이 뜨기를 기다렸다가 Inspector 를 주입합니다.
     /// startup hook 이 없는 런타임이라 이것이 가장 이른 때다. 주입은 창이 있어야 하므로(<see cref="WpfProcessInjector.Inject"/>)
@@ -388,9 +396,9 @@ public sealed class ProcessTools
     /// <param name="pid">연결한 프로세스.</param>
     /// <param name="ct">취소 토큰.</param>
     /// <returns>같은 빌드면 null, 아니면 거절 문장.</returns>
-    private async Task<string?> RefuseOtherBuildAsync(int pid, CancellationToken ct)
+    internal async Task<string?> RefuseOtherBuildAsync(int pid, InspectorClient client, CancellationToken ct)
     {
-        var pong = await _sessionManager.GetActive().PingAsync(ct);
+        var pong = await client.PingAsync(ct);
         var reported = pong.Payload is { } payload
             ? IpcSerializer.DeserializePayload<PongResponse>(payload).InspectorBuild
             : null;

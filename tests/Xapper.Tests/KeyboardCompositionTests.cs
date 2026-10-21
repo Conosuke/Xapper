@@ -47,7 +47,7 @@ public sealed class KeyboardCompositionTests
         OffscreenTextBoxes.Run(box =>
         {
             box.PreviewKeyDown += (_, e) => e.Handled = true;
-            var result = KeyboardInput.Send(null, "a", ModifierKeys.None);
+            var result = KeyboardInput.Send(null, UnmodifiedCharacter().ToString(), ModifierKeys.None);
             Assert.Null(result.Error);
             Assert.Equal("", box.Text);
         });
@@ -59,10 +59,11 @@ public sealed class KeyboardCompositionTests
         OffscreenTextBoxes.Run((box, editor) =>
         {
             box.PreviewKeyDown += (_, _) => editor.Focus();
-            var result = KeyboardInput.TypeText(null, "ab");
+            var text = new string(UnmodifiedCharacter(), 2);
+            var result = KeyboardInput.TypeText(null, text);
             Assert.Null(result.Error);
             Assert.Equal("", box.Text);
-            Assert.Equal("ab", editor.Text);
+            Assert.Equal(text, editor.Text);
         });
     }
 
@@ -94,7 +95,7 @@ public sealed class KeyboardCompositionTests
             bool? up = null;
             box.PreviewKeyDown += (_, e) => down = e.IsDown;
             box.PreviewKeyUp += (_, e) => up = e.IsDown;
-            Assert.Null(KeyboardInput.Send(null, "a", ModifierKeys.None).Error);
+            Assert.Null(KeyboardInput.Send(null, "F24", ModifierKeys.None).Error);
             Assert.Equal(true, down);
             Assert.Equal(false, up);
         });
@@ -131,6 +132,21 @@ public sealed class KeyboardCompositionTests
             Assert.Throws<InvalidOperationException>(() => KeyboardInput.Send(null, "F24", ModifierKeys.None));
             Assert.Equal(before < 0, GetKeyState(0x87) < 0);
         });
+    }
+
+    #endregion
+
+    #region Layout Helpers
+
+    /// <summary>Text/key coupling requires an actual unmodified mapping in the active Windows layout.</summary>
+    private static char UnmodifiedCharacter()
+    {
+        foreach (var character in "abcdefghijklmnopqrstuvwxyz0123456789.,-;")
+        {
+            var mapped = VkKeyScanW(character);
+            if (mapped != -1 && (mapped & 0xff00) == 0) return character;
+        }
+        throw new InvalidOperationException("The current keyboard layout exposes no unmodified printable character for this input test.");
     }
 
     #endregion

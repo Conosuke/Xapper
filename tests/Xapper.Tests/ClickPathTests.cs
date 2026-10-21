@@ -93,6 +93,34 @@ public class ClickPathTests
             finally { window.Close(); }
         });
     }
+
+    [Fact]
+    public void DirectCenterClick_DropsSpoofingWhileASlowHandlerIsStillRunning()
+    {
+        StaThread.Run(() =>
+        {
+            var child = new Border { Background = System.Windows.Media.Brushes.White };
+            var window = new Window { Content = child, Width = 180, Height = 120, ShowActivated = false };
+            bool? heldAfterTimeout = null;
+            var realDown = Mouse.LeftButton == MouseButtonState.Pressed;
+            child.PreviewMouseDown += (_, _) =>
+            {
+                Thread.Sleep(SyntheticMouse.StallTimeoutMs + 150);
+                heldAfterTimeout = Mouse.LeftButton == MouseButtonState.Pressed;
+            };
+            try
+            {
+                window.Show();
+                window.UpdateLayout();
+                PumpDispatcher();
+                var result = ClickAction.Execute(child);
+                Assert.Null(result.Error);
+                Assert.Contains("synthetic mouse input", result.Path);
+                Assert.Equal(realDown, heldAfterTimeout);
+            }
+            finally { window.Close(); }
+        });
+    }
 }
 
 /// <summary>

@@ -74,6 +74,33 @@ public sealed class IsolatedDesktopAppTests
     }
 
     [Fact]
+    public async Task ExecutablePath_WithSpacesAndUnicode_LaunchesTheIntendedApp()
+    {
+        var original = WindowsTestApps.Find("Xapper.TestApp");
+        var source = Path.GetDirectoryName(original) ?? throw new InvalidOperationException("TestApp has no output directory.");
+        var folder = Path.Combine(Path.GetTempPath(), "xapper 실행 파일 " + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(folder);
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+            {
+                var destination = Path.Combine(folder, Path.GetRelativePath(source, file));
+                Directory.CreateDirectory(Path.GetDirectoryName(destination) ?? folder);
+                File.Copy(file, destination);
+            }
+            using var app = IsolatedDesktopApp.Start(IsolatedDesktopApp.NextDesktopName(),
+                Path.Combine(folder, Path.GetFileName(original)), null, folder,
+                new Dictionary<string, string> { ["DOTNET_STARTUP_HOOKS"] = "" });
+            var watch = Stopwatch.StartNew();
+            while (app.FindVisibleWindow() == IntPtr.Zero && !app.Process.HasExited && watch.Elapsed < TimeSpan.FromSeconds(10))
+                await Task.Delay(50);
+            Assert.NotEqual(IntPtr.Zero, app.FindVisibleWindow());
+            Assert.Equal(Path.Combine(folder, Path.GetFileName(original)), app.Process.MainModule?.FileName, ignoreCase: true);
+        }
+        finally { Directory.Delete(folder, true); }
+    }
+
+    [Fact]
     public async Task ArgumentsEnvironmentAndWorkingDirectory_SurviveUnicodeAndSpaces()
     {
         var folder = Path.Combine(Path.GetTempPath(), "xapper 한 글 " + Guid.NewGuid().ToString("N"));

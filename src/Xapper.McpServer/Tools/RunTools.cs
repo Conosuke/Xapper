@@ -68,18 +68,19 @@ public sealed class RunTools
 
         var limit = Math.Clamp(timeoutMs, 1000, 300000);
 
-        InspectorClient client;
+        InspectorSession session;
         try
         {
-            client = _sessionManager.GetActive();
+            session = _sessionManager.GetActiveSession();
         }
         catch (InvalidOperationException ex)
         {
             return $"Error: {ex.Message}";
         }
 
-        var pid = _sessionManager.ActiveProcessId ?? 0;
-        var isolated = _sessionManager.IsIsolated(pid);
+        var client = session.Client;
+        var pid = session.ProcessId;
+        var isolated = session.Isolated;
         var runner = new ScriptRunner((msg, token) => client.SendAsync(msg, token), pid, isolated ? null : _notice);
         var result = await runner.RunAsync(script, limit, ct);
 

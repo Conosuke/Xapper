@@ -256,13 +256,24 @@ update correctly recovered the required question, all isolated restrictions,
 center-click behavior, and visible-mode notice ownership, finding no conflict.
 
 Coverage: A maps to Tasks 1-3 and 7; B to Tasks 4-5 and 7; C to Tasks 2, 6,
-and 7. The five review-focus conditions have tests in their owning tasks.
+and 7. Regression tests cover the normal lifetime, startup refusal, concurrent
+session identity, script capture, input filtering, and associated error paths.
+Deterministic assignment/resume failure, exit during the suspended startup
+handoff, and throwing client-disposal fault injection are not covered. These
+native/cleanup failure paths were inspected but remain unexercised.
+Final review added atomic InspectorSession snapshots, AttachIsolatedAsync, and
+client-specific build verification to remove active-session races. Direct
+synthetic center clicks now deliver from a separate sender while pumping the
+owning dispatcher, preserving the stall watchdog. Keyboard coupling tests
+select an unmodified character in the active layout and state tests use F24.
+
 Interfaces above are the names later tasks consume. Native failures that
 cannot be induced reliably are explicitly reviewed and reported, not marked
 as runtime-tested.
 
-Recommended execution method: native implementation in this session, followed
-by an independent final review. The seven tasks share ownership, policy, and
-input-result interfaces; keeping one implementer avoids repeated integration
-handoffs. The user must review this plan and select/confirm the execution
-method before implementation under the writing-plans workflow.
+Execution method selected by the user: native implementation in this session,
+followed by independent final review. That review identified three important
+correctness issues and one layout-dependent test issue. The fix pass added
+regression cases and the atomic session and separate-sender corrections above.
+The complete solution still cross-compiles with zero warnings/errors. Windows
+runtime execution remains pending; see `docs/validation/2026-10-21-isolated-launch-input.md`.

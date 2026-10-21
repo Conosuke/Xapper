@@ -5,6 +5,7 @@ using System.Windows.Automation.Provider;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Threading;
 
 namespace Xapper.Inspector.Actions;
 
@@ -145,8 +146,16 @@ public static class ClickAction
         if (PresentationSource.FromDependencyObject(element) is not HwndSource source)
             return new ClickOutcome("", null, "The element has no presentation source for a coordinate click. No input was sent.");
         var screen = MouseInput.ToScreenPoint(element, .5, .5);
-        var result = doubleClick ? SyntheticMouse.TryDoubleClick(source.Handle, screen, modifiers)
-            : SyntheticMouse.TryClick(source.Handle, screen, modifiers);
+        var hwnd = source.Handle;
+        // Same-thread SendMessageTimeout ignores its timeout. Pump the UI while a separate sender
+        // delivers the gesture, so a modal/slow handler still releases spoofing after the watchdog limit.
+        var frame = new DispatcherFrame();
+        var sending = Task.Run(() => doubleClick ? SyntheticMouse.TryDoubleClick(hwnd, screen, modifiers)
+            : SyntheticMouse.TryClick(hwnd, screen, modifiers));
+        _ = sending.ContinueWith(_ => frame.Continue = false, CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        Dispatcher.PushFrame(frame);
+        var result = sending.GetAwaiter().GetResult();
         if (result != GestureResult.Unavailable)
             return new ClickOutcome("synthetic mouse input at the center (0.50,0.50; no cursor movement)",
                 result == GestureResult.Stalled ? "The app is still handling the synthetic gesture; verify its state before repeating it." : null);

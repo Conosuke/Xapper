@@ -45,5 +45,33 @@ public sealed class IsolatedSessionTests
         Assert.False(app.Process.HasExited);
     }
 
+    [Fact]
+    public async Task ManagerDisposal_ClosesEveryOwnedApplication()
+    {
+        var exe = WindowsTestApps.Find("Xapper.TestApp");
+        using var first = IsolatedDesktopApp.Start(IsolatedDesktopApp.NextDesktopName(), exe, null,
+            Path.GetDirectoryName(exe) ?? ".", new Dictionary<string, string> { ["DOTNET_STARTUP_HOOKS"] = "" });
+        using var second = IsolatedDesktopApp.Start(IsolatedDesktopApp.NextDesktopName(), exe, null,
+            Path.GetDirectoryName(exe) ?? ".", new Dictionary<string, string> { ["DOTNET_STARTUP_HOOKS"] = "" });
+        using var firstObserver = Process.GetProcessById(first.Process.Id);
+        using var secondObserver = Process.GetProcessById(second.Process.Id);
+        _ = firstObserver.Handle;
+        _ = secondObserver.Handle;
+        await using var firstPipe = FakeInspector.Create(firstObserver.Id);
+        await using var secondPipe = FakeInspector.Create(secondObserver.Id);
+        var firstAccept = firstPipe.WaitForConnectionAsync();
+        var secondAccept = secondPipe.WaitForConnectionAsync();
+        await using var sessions = new SessionManager();
+        await sessions.AttachIsolatedAsync(first);
+        await sessions.AttachIsolatedAsync(second);
+        await Task.WhenAll(firstAccept, secondAccept);
+        await sessions.DisposeAsync();
+        Assert.True(firstObserver.WaitForExit(5000));
+        Assert.True(secondObserver.WaitForExit(5000));
+        Assert.Null(sessions.ActiveSession);
+        Assert.False(WindowsTestApps.DesktopExists(first.DesktopName));
+        Assert.False(WindowsTestApps.DesktopExists(second.DesktopName));
+    }
+
     #endregion
 }

@@ -25,6 +25,17 @@ public sealed class SessionManager : IAsyncDisposable
     /// <summary>현재 활성 세션의 프로세스 ID. 세션이 없으면 null.</summary>
     public int? ActiveProcessId { get { lock (_gate) return _activeProcessId; } }
 
+    /// <summary>Captures identity, connection, and isolation together, even if the connection was lost.</summary>
+    public InspectorSession? ActiveSession
+    {
+        get
+        {
+            lock (_gate)
+                return _activeProcessId is { } pid && _sessions.TryGetValue(pid, out var client)
+                    ? new InspectorSession(client, pid, _isolated.ContainsKey(pid)) : null;
+        }
+    }
+
     #endregion
 
     #region Public Methods
@@ -36,7 +47,13 @@ public sealed class SessionManager : IAsyncDisposable
     /// <param name="ct">취소 토큰.</param>
     /// <returns>연결된 <see cref="InspectorClient"/>.</returns>
     /// <exception cref="InvalidOperationException">이미 해당 프로세스에 연결된 경우.</exception>
-    public async Task<InspectorClient> AttachAsync(int processId, CancellationToken ct = default)
+    public Task<InspectorClient> AttachAsync(int processId, CancellationToken ct = default) => AttachCoreAsync(processId, null, ct);
+
+    /// <summary>Publishes the connected client and isolated ownership atomically, before exposing the active app.</summary>
+    public Task<InspectorClient> AttachIsolatedAsync(IsolatedDesktopApp app, CancellationToken ct = default) =>
+        AttachCoreAsync(app.Process.Id, app, ct);
+
+    private async Task<InspectorClient> AttachCoreAsync(int processId, IsolatedDesktopApp? app, CancellationToken ct)
     {
         lock (_gate)
         {
@@ -52,6 +69,7 @@ public sealed class SessionManager : IAsyncDisposable
             {
                 ObjectDisposedException.ThrowIf(_disposed, this);
                 _sessions.Add(processId, client);
+                if (app is not null) _isolated.Add(processId, app);
                 _activeProcessId = processId;
             }
             return client;
@@ -64,7 +82,7 @@ public sealed class SessionManager : IAsyncDisposable
         finally { lock (_gate) _connecting.Remove(processId); }
     }
 
-    /// <summary>Takes ownership only after a connection exists, before launch build validation.</summary>
+    /// <summary>Takes ownership of an existing connection. Launch uses AttachIsolatedAsync to publish policy atomically.</summary>
     public void OwnIsolated(IsolatedDesktopApp app)
     {
         lock (_gate)
@@ -115,16 +133,19 @@ public sealed class SessionManager : IAsyncDisposable
     /// <exception cref="InvalidOperationException">활성 세션이 없거나 연결이 끊어진 경우.</exception>
     public InspectorClient GetActive()
     {
-        lock (_gate)
-        {
-            if (_activeProcessId == null || !_sessions.TryGetValue(_activeProcessId.Value, out var client))
-                throw new InvalidOperationException("No active session. Call xapper_attach or xapper_launch first.");
-            if (!client.IsConnected)
-                throw new InvalidOperationException(_isolated.ContainsKey(_activeProcessId.Value)
-                    ? $"Connection to isolated process {_activeProcessId} lost. Detach to close it, then use xapper_launch again."
-                    : $"Connection to process {_activeProcessId} lost. Detach and re-attach.");
-            return client;
-        }
+        return GetActiveSession().Client;
+    }
+
+    /// <summary>Returns one consistent, connected snapshot instead of joining separately read mutable state.</summary>
+    public InspectorSession GetActiveSession()
+    {
+        var session = ActiveSession
+            ?? throw new InvalidOperationException("No active session. Call xapper_attach or xapper_launch first.");
+        if (!session.Client.IsConnected)
+            throw new InvalidOperationException(session.Isolated
+                ? $"Connection to isolated process {session.ProcessId} lost. Detach to close it, then use xapper_launch again."
+                : $"Connection to process {session.ProcessId} lost. Detach and re-attach.");
+        return session;
     }
 
     /// <summary>

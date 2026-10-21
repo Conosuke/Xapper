@@ -2,8 +2,9 @@
 
 Date: 2026-10-21
 
-Status: Approved by the user on 2026-10-21. Product implementation awaits
-implementation-plan review.
+Status: Approved by the user on 2026-10-21 and implemented on the work branch.
+Cross-compilation passes; Windows runtime acceptance remains pending. See
+`docs/validation/2026-10-21-isolated-launch-input.md` for evidence and limits.
 
 ## Intent and scope
 
