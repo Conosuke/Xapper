@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using Xapper.Protocol;
 
 namespace Xapper.Injector;
@@ -76,6 +77,21 @@ public sealed class WpfProcessInjector
         if (process.MainWindowHandle == IntPtr.Zero)
             throw new InvalidOperationException(
                 $"Process {processId} ({process.ProcessName}) has no visible main window");
+
+        InjectCore(processId, waitForApplication);
+    }
+
+    /// <summary>Injects a launched app after verifying its window on the launcher-owned desktop.</summary>
+    public void InjectLaunched(int processId, IntPtr windowHandle)
+    {
+        if (windowHandle == IntPtr.Zero || GetWindowThreadProcessId(windowHandle, out var owner) == 0 || owner != (uint)processId)
+            throw new InvalidOperationException($"The launch window does not belong to process {processId}.");
+        InjectCore(processId, waitForApplication: true);
+    }
+
+    /// <summary>Shares runtime and payload selection after the caller has verified the target window.</summary>
+    private void InjectCore(int processId, bool waitForApplication)
+    {
 
         var runtime = NativeInjector.DetectRuntime(processId)
             ?? throw new InvalidOperationException($"Process {processId} does not appear to be a .NET application.");
@@ -192,6 +208,9 @@ public sealed class WpfProcessInjector
     #endregion
 
     #region Private Methods
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
 
     /// <summary>
     /// 대상 프로세스의 .NET 런타임에 맞는 Inspector DLL 경로를 결정합니다.

@@ -28,6 +28,8 @@ internal static class WindowCommands
 
         var title = NativeMethods.TitleOf(hwnd);
         var name = action.Trim().ToLowerInvariant();
+        if (name == "front" && IsolatedMode.RefuseForeground() is { } refusal)
+            return NativeResult.Fail(refusal);
 
         switch (name)
         {

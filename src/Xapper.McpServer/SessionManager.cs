@@ -1,4 +1,5 @@
 using Xapper.McpServer.Ipc;
+using Xapper.McpServer.Infrastructure;
 
 namespace Xapper.McpServer;
 
@@ -11,6 +12,10 @@ public sealed class SessionManager : IAsyncDisposable
     #region Fields
 
     private readonly Dictionary<int, InspectorClient> _sessions = new();
+    private readonly Dictionary<int, IsolatedDesktopApp> _isolated = new();
+    private readonly HashSet<int> _connecting = new();
+    private readonly object _gate = new();
+    private bool _disposed;
     private int? _activeProcessId;
 
     #endregion
@@ -18,7 +23,18 @@ public sealed class SessionManager : IAsyncDisposable
     #region Properties
 
     /// <summary>현재 활성 세션의 프로세스 ID. 세션이 없으면 null.</summary>
-    public int? ActiveProcessId => _activeProcessId;
+    public int? ActiveProcessId { get { lock (_gate) return _activeProcessId; } }
+
+    /// <summary>Captures identity, connection, and isolation together, even if the connection was lost.</summary>
+    public InspectorSession? ActiveSession
+    {
+        get
+        {
+            lock (_gate)
+                return _activeProcessId is { } pid && _sessions.TryGetValue(pid, out var client)
+                    ? new InspectorSession(client, pid, _isolated.ContainsKey(pid)) : null;
+        }
+    }
 
     #endregion
 
@@ -31,17 +47,61 @@ public sealed class SessionManager : IAsyncDisposable
     /// <param name="ct">취소 토큰.</param>
     /// <returns>연결된 <see cref="InspectorClient"/>.</returns>
     /// <exception cref="InvalidOperationException">이미 해당 프로세스에 연결된 경우.</exception>
-    public async Task<InspectorClient> AttachAsync(int processId, CancellationToken ct = default)
+    public Task<InspectorClient> AttachAsync(int processId, CancellationToken ct = default) => AttachCoreAsync(processId, null, ct);
+
+    /// <summary>Publishes the connected client and isolated ownership atomically, before exposing the active app.</summary>
+    public Task<InspectorClient> AttachIsolatedAsync(IsolatedDesktopApp app, CancellationToken ct = default) =>
+        AttachCoreAsync(app.Process.Id, app, ct);
+
+    private async Task<InspectorClient> AttachCoreAsync(int processId, IsolatedDesktopApp? app, CancellationToken ct)
     {
-        if (_sessions.ContainsKey(processId))
-            throw new InvalidOperationException($"Already attached to process {processId}");
-
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_sessions.ContainsKey(processId) || !_connecting.Add(processId))
+                throw new InvalidOperationException($"Already attached to process {processId}");
+        }
         var client = new InspectorClient(processId);
-        await client.ConnectAsync(ct);
+        try
+        {
+            await client.ConnectAsync(ct);
+            lock (_gate)
+            {
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                _sessions.Add(processId, client);
+                if (app is not null) _isolated.Add(processId, app);
+                _activeProcessId = processId;
+            }
+            return client;
+        }
+        catch
+        {
+            await client.DisposeAsync();
+            throw;
+        }
+        finally { lock (_gate) _connecting.Remove(processId); }
+    }
 
-        _sessions[processId] = client;
-        _activeProcessId = processId;
-        return client;
+    /// <summary>Takes ownership of an existing connection. Launch uses AttachIsolatedAsync to publish policy atomically.</summary>
+    public void OwnIsolated(IsolatedDesktopApp app)
+    {
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            var pid = app.Process.Id;
+            if (!_sessions.TryGetValue(pid, out var client) || !client.IsConnected || _isolated.ContainsKey(pid))
+                throw new InvalidOperationException($"Cannot own isolated process {pid}: a unique connected session is required.");
+            _isolated.Add(pid, app);
+        }
+    }
+
+    /// <summary>Whether this server owns an isolated app for the given session.</summary>
+    public bool IsIsolated(int pid) { lock (_gate) return _isolated.ContainsKey(pid); }
+
+    /// <summary>The owned desktop name, or null for an ordinary or absent session.</summary>
+    public string? IsolatedDesktopOf(int pid)
+    {
+        lock (_gate) return _isolated.TryGetValue(pid, out var app) ? app.DesktopName : null;
     }
 
     /// <summary>
@@ -51,18 +111,19 @@ public sealed class SessionManager : IAsyncDisposable
     /// <param name="ct">취소 토큰.</param>
     public async Task DetachAsync(int? processId = null, CancellationToken ct = default)
     {
-        var pid = processId ?? _activeProcessId
-            ?? throw new InvalidOperationException("No active session");
-
-        if (_sessions.TryGetValue(pid, out var client))
+        InspectorClient? client;
+        IsolatedDesktopApp? app;
+        lock (_gate)
         {
-            await client.DisposeAsync();
-            _sessions.Remove(pid);
+            var pid = processId ?? _activeProcessId
+                ?? throw new InvalidOperationException("No active session");
+            _sessions.Remove(pid, out client);
+            _isolated.Remove(pid, out app);
+            if (_activeProcessId == pid)
+                _activeProcessId = _sessions.Count > 0 ? _sessions.Keys.First() : null;
         }
-
-        // 남은 세션이 없으면 null 이어야 한다. FirstOrDefault 는 빈 목록에서 0 을 내서, 없는 프로세스 0 이 활성인 것처럼 보였다.
-        if (_activeProcessId == pid)
-            _activeProcessId = _sessions.Count > 0 ? _sessions.Keys.First() : null;
+        try { if (client is not null) await client.DisposeAsync(); }
+        finally { app?.Dispose(); }
     }
 
     /// <summary>
@@ -72,14 +133,19 @@ public sealed class SessionManager : IAsyncDisposable
     /// <exception cref="InvalidOperationException">활성 세션이 없거나 연결이 끊어진 경우.</exception>
     public InspectorClient GetActive()
     {
-        if (_activeProcessId == null || !_sessions.TryGetValue(_activeProcessId.Value, out var client))
-            throw new InvalidOperationException("No active session. Call xapper_attach first.");
+        return GetActiveSession().Client;
+    }
 
-        if (!client.IsConnected)
-            throw new InvalidOperationException(
-                $"Connection to process {_activeProcessId} lost. Detach and re-attach.");
-
-        return client;
+    /// <summary>Returns one consistent, connected snapshot instead of joining separately read mutable state.</summary>
+    public InspectorSession GetActiveSession()
+    {
+        var session = ActiveSession
+            ?? throw new InvalidOperationException("No active session. Call xapper_attach or xapper_launch first.");
+        if (!session.Client.IsConnected)
+            throw new InvalidOperationException(session.Isolated
+                ? $"Connection to isolated process {session.ProcessId} lost. Detach to close it, then use xapper_launch again."
+                : $"Connection to process {session.ProcessId} lost. Detach and re-attach.");
+        return session;
     }
 
     /// <summary>
@@ -87,10 +153,30 @@ public sealed class SessionManager : IAsyncDisposable
     /// </summary>
     public async ValueTask DisposeAsync()
     {
-        foreach (var client in _sessions.Values)
-            await client.DisposeAsync();
-        _sessions.Clear();
-        _activeProcessId = null;
+        InspectorClient[] clients;
+        IsolatedDesktopApp[] apps;
+        lock (_gate)
+        {
+            _disposed = true;
+            clients = _sessions.Values.ToArray();
+            apps = _isolated.Values.ToArray();
+            _sessions.Clear();
+            _isolated.Clear();
+            _activeProcessId = null;
+        }
+        var errors = new List<Exception>();
+        foreach (var client in clients)
+        {
+            try { await client.DisposeAsync(); }
+            catch (Exception ex) { errors.Add(ex); }
+        }
+        foreach (var app in apps)
+        {
+            try { app.Dispose(); }
+            catch (Exception ex) { errors.Add(ex); }
+        }
+        if (errors.Count > 0)
+            throw new AggregateException("One or more sessions could not be cleaned up.", errors);
     }
 
     #endregion

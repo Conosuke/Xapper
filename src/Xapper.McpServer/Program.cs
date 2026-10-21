@@ -59,11 +59,11 @@ var serverInstructions = """
     and report that the element does not support the action when neither fits. Select is the odd one out: it
     reads a Selector's items directly before it considers the pattern at all.
 
-    Click never refuses. It tries the Invoke or Toggle pattern, then a ButtonBase click event, and failing
-    both it raises four simulated routed mouse events at any UIElement - reporting success in every case. So
-    on a control that offers nothing, click is the action that still does something, but read the path named
-    in its response rather than trusting the word "Clicked". When the element needs genuine input - hit
-    testing, mouse capture, a handler on MouseDown rather than MouseLeftButtonDown - pass x/y.
+    A coordinate-free click uses Invoke, Toggle, unselected SelectionItem Select, or a ButtonBase click event.
+    Buttons receive keyboard focus before activation (except Hover mode), committing edits before Save runs.
+    Without an event path, click uses synthetic mouse input at the center (0.5,0.5), including parent mouse
+    handlers and hit testing. Pass x/y to choose another point. Read the actual path and any refusal; the
+    direct routed-mouse-event fallback has been removed.
 
     Click with x/y and any drag that does not start on a splitter, slider or scrollbar thumb are normally
     driven from inside the target process: real WM mouse messages with the OS button-state and cursor-position
@@ -95,6 +95,20 @@ var serverInstructions = """
     When you can start the app yourself, xapper_launch is better than attaching: it loads the inspector before
     the app's entry point, so there is no injection step and screens that appear before the main window -
     splash, login - are reachable too.
+
+    Before the first launch in each task, ask whether the user wants isolated or visible testing and reuse
+    their answer until they change it. isolated=true creates a Win32 desktop whose windows and popups never
+    appear on the person's screen; testing can continue while locked. This is not a security sandbox: files,
+    registry, network and clipboard are shared. Nobody can see those windows directly, so report what you
+    observed and use render screenshots; find/snapshot read popups and menus. Screen capture, foregrounding,
+    recording and later attach are unavailable; notices are not needed and real mouse fallback is refused
+    without sending input. Detach or server exit closes an isolated app and its children. Omit isolated for
+    visible testing with the existing ordinary launch lifetime.
+
+    Injected keys follow WPF's system-key and text-composition routes: Alt without Ctrl and F10 without Ctrl
+    are system keys; PreviewTextInput filters apply. Handled key-downs suppress text, and text follows the
+    current focus if an editor opens. Characters needing layout modifiers are entered as text rather than
+    misleading base-key events.
 
     Element refs come from xapper_snapshot and xapper_find. Only xapper_snapshot resets them, and it does
     more than invalidate: it also restarts numbering from 1, so a ref you obtained before a snapshot may

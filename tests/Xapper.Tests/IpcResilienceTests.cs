@@ -13,6 +13,30 @@ namespace Xapper.Tests;
 public class IpcResilienceTests
 {
     [Fact]
+    public async Task Server_SurvivesAnImmediatelyClosedProbe_AndStopsCleanly()
+    {
+        var name = IpcPipeNames.ForProcess(FakeInspector.NextProcessId());
+        var server = new IpcServer(name);
+        var listening = Task.Run(server.StartListening);
+        try
+        {
+            await using (var probe = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous))
+                await probe.ConnectAsync(5000);
+            await using (var healthy = new NamedPipeClientStream(".", name, PipeDirection.InOut, PipeOptions.Asynchronous))
+            {
+                await healthy.ConnectAsync(5000);
+                var ping = IpcSerializer.CreateRequest("ping");
+                await healthy.WriteAsync(IpcSerializer.Serialize(ping));
+                using var deadline = new CancellationTokenSource(5000);
+                var response = await IpcSerializer.DeserializeAsync(healthy, deadline.Token);
+                Assert.NotNull(response);
+                Assert.Equal(ping.Id, response.Id);
+            }
+        }
+        finally { server.Stop(); await listening.WaitAsync(TimeSpan.FromSeconds(5)); }
+        Assert.True(listening.IsCompletedSuccessfully);
+    }
+    [Fact]
     public async Task Server_SurvivesMalformedFrame_AndServesNextConnection()
     {
         var pipeName = IpcPipeNames.ForProcess(FakeInspector.NextProcessId());

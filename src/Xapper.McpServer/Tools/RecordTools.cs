@@ -13,6 +13,7 @@ public sealed class RecordTools
     #region Fields
 
     private readonly ScreenRecorder _recorder;
+    private readonly SessionManager _sessionManager;
 
     #endregion
 
@@ -22,9 +23,10 @@ public sealed class RecordTools
     /// <see cref="RecordTools"/>의 새 인스턴스를 생성합니다.
     /// </summary>
     /// <param name="recorder">녹화를 실제로 맡는 녹화기.</param>
-    public RecordTools(ScreenRecorder recorder)
+    public RecordTools(ScreenRecorder recorder, SessionManager sessionManager)
     {
         _recorder = recorder;
+        _sessionManager = sessionManager;
     }
 
     #endregion
@@ -37,12 +39,16 @@ public sealed class RecordTools
         "most of all a run that failed. It captures every monitor and every window on them, not only the app: on " +
         "a machine a person is using, their other windows end up in the video, so use it on unattended machines. " +
         "The file plays up to the last second written even if the run is killed. One recording at a time; finish " +
-        "it with xapper_record_stop. Needs ffmpeg on the server's PATH.")]
+        "it with xapper_record_stop. Needs ffmpeg on the server's PATH. Refused for an active isolated session: " +
+        "the video would contain the person's desktop rather than that app. Use render screenshots instead.")]
     public async Task<string> Start(
         [Description("Absolute path of the .mp4 to write; its folder is created if missing")] string path,
         [Description("Frames per second, 1-30 (default 10)")] int fps = 10,
         CancellationToken ct = default)
     {
+        if (_sessionManager.ActiveSession is { Isolated: true })
+            return "Error: desktop recording cannot capture an app on an isolated desktop; it would record " +
+                   "the person's unrelated desktop instead. Use render screenshots to inspect this app.";
         return await _recorder.StartAsync(path, fps, ct)
                ?? $"Recording the desktop to {path} at {fps} fps. Call xapper_record_stop to finish the file.";
     }

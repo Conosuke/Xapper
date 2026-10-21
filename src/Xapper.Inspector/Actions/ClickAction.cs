@@ -1,15 +1,18 @@
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Automation.Peers;
 using System.Windows.Automation.Provider;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Interop;
+using System.Windows.Threading;
 
 namespace Xapper.Inspector.Actions;
 
 /// <summary>
 /// UI 요소에 대한 클릭 액션을 수행하는 정적 클래스.
-/// 좌표 미지정 시: AutomationPeer(IInvokeProvider/IToggleProvider) → ButtonBase.ClickEvent → 마우스 이벤트 시뮬레이션 순으로 시도.
-/// 좌표 지정 시: <see cref="MouseInput"/>을 통해 SendInput(MOUSEEVENTF_ABSOLUTE | VIRTUALDESK)으로 클릭.
+/// 좌표 미지정 시: 접근성·버튼 이벤트 경로가 없으면 가운데 좌표에서 합성 마우스 경로를 사용한다.
+/// IPC 좌표 클릭은 합성 경로를 먼저 시도하고, 이 클래스의 좌표 경로는 허용된 실제 입력 폴백을 맡는다.
 /// 좌표가 입력 이벤트에 원자적으로 포함되므로 타이밍 이슈 없음.
 /// 듀얼 모니터, Per-Monitor DPI 환경에서 동작.
 /// 두 경로는 신뢰도가 다르므로, 호출자가 판단할 수 있도록 각 경로의 위험 신호를 경고 문구로 돌려준다.
@@ -38,8 +41,8 @@ public static class ClickAction
     /// <summary>버튼의 클릭 이벤트를 직접 올렸을 때의 경로 이름. 마우스 이벤트는 발생하지 않는다.</summary>
     private const string ButtonClickEventPath = "the ButtonBase click event (no mouse events raised)";
 
-    /// <summary>라우티드 마우스 이벤트를 흉내 냈을 때의 경로 이름. 실제 입력은 아니다.</summary>
-    private const string SimulatedMouseEventPath = "simulated routed mouse events (not real input)";
+    /// <summary>선택되지 않은 목록 항목을 접근성 패턴으로 선택했을 때의 경로.</summary>
+    private const string SelectionPath = "the automation SelectionItem pattern (no mouse events raised)";
 
     /// <summary>실제 마우스 입력을 보냈을 때의 경로 이름.</summary>
     private const string RealMouseInputPath = "real mouse input";
@@ -64,10 +67,29 @@ public static class ClickAction
         if (relativeX.HasValue && relativeY.HasValue)
             return ClickAtPosition(element, relativeX.Value, relativeY.Value, doubleClick, modifiers);
 
+        if (!HasEventPath(element))
+            return ClickAtCenter(element, doubleClick, modifiers);
+
+        // Losing focus commits the edited value before the Save command observes it.
+        if (element is ButtonBase { Focusable: true, ClickMode: not ClickMode.Hover } button)
+            Keyboard.Focus(button);
+
         var path = RaiseClick(element);
+        if (path is null)
+            return ClickAtCenter(element, doubleClick, modifiers);
 
         return new ClickOutcome(path,
             MouseInput.IsReachableByMouse(element, 0.5, 0.5) ? null : UnreachableWarning);
+    }
+
+    /// <summary>Whether coordinate-free activation has a real event/automation path for this element.</summary>
+    public static bool HasEventPath(UIElement element)
+    {
+        var peer = UIElementAutomationPeer.CreatePeerForElement(element);
+        return element is ButtonBase
+            || peer?.GetPattern(PatternInterface.Invoke) is IInvokeProvider
+            || peer?.GetPattern(PatternInterface.Toggle) is IToggleProvider
+            || peer?.GetPattern(PatternInterface.SelectionItem) is ISelectionItemProvider { IsSelected: false };
     }
 
     #endregion
@@ -78,8 +100,14 @@ public static class ClickAction
     /// 접근성 인터페이스와 라우티드 이벤트로 클릭을 발생시킵니다. 히트테스트를 거치지 않습니다.
     /// </summary>
     /// <returns>실제로 사용된 경로에 대한 설명.</returns>
-    private static string RaiseClick(UIElement uiElement)
+    private static string? RaiseClick(UIElement uiElement)
     {
+        // Hover buttons have no ordinary keyboard focus/Invoke semantics.
+        if (uiElement is ButtonBase { ClickMode: ClickMode.Hover } hover)
+        {
+            hover.RaiseEvent(new RoutedEventArgs(ButtonBase.ClickEvent));
+            return ButtonClickEventPath;
+        }
         // Priority 1: AutomationPeer
         var peer = UIElementAutomationPeer.CreatePeerForElement(uiElement);
         if (peer != null)
@@ -95,6 +123,11 @@ public static class ClickAction
                 toggler.Toggle();
                 return AutomationTogglePath;
             }
+            if (peer.GetPattern(PatternInterface.SelectionItem) is ISelectionItemProvider { IsSelected: false } item)
+            {
+                item.Select();
+                return SelectionPath;
+            }
         }
 
         // Priority 2: RaiseEvent fallback
@@ -104,25 +137,29 @@ public static class ClickAction
             return ButtonClickEventPath;
         }
 
-        // Priority 3: 마우스 이벤트 시뮬레이션 (최후 수단)
-        uiElement.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
-        {
-            RoutedEvent = UIElement.PreviewMouseLeftButtonDownEvent
-        });
-        uiElement.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
-        {
-            RoutedEvent = UIElement.MouseLeftButtonDownEvent
-        });
-        uiElement.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
-        {
-            RoutedEvent = UIElement.PreviewMouseLeftButtonUpEvent
-        });
-        uiElement.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, 0, MouseButton.Left)
-        {
-            RoutedEvent = UIElement.MouseLeftButtonUpEvent
-        });
+        return null;
+    }
 
-        return SimulatedMouseEventPath;
+    /// <summary>Direct callers use the same centered synthetic gesture as the IPC handler.</summary>
+    private static ClickOutcome ClickAtCenter(UIElement element, bool doubleClick, ModifierKeys modifiers)
+    {
+        if (PresentationSource.FromDependencyObject(element) is not HwndSource source)
+            return new ClickOutcome("", null, "The element has no presentation source for a coordinate click. No input was sent.");
+        var screen = MouseInput.ToScreenPoint(element, .5, .5);
+        var hwnd = source.Handle;
+        // Same-thread SendMessageTimeout ignores its timeout. Pump the UI while a separate sender
+        // delivers the gesture, so a modal/slow handler still releases spoofing after the watchdog limit.
+        var frame = new DispatcherFrame();
+        var sending = Task.Run(() => doubleClick ? SyntheticMouse.TryDoubleClick(hwnd, screen, modifiers)
+            : SyntheticMouse.TryClick(hwnd, screen, modifiers));
+        _ = sending.ContinueWith(_ => frame.Continue = false, CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+        Dispatcher.PushFrame(frame);
+        var result = sending.GetAwaiter().GetResult();
+        if (result != GestureResult.Unavailable)
+            return new ClickOutcome("synthetic mouse input at the center (0.50,0.50; no cursor movement)",
+                result == GestureResult.Stalled ? "The app is still handling the synthetic gesture; verify its state before repeating it." : null);
+        return ClickAtPosition(element, .5, .5, doubleClick, modifiers);
     }
 
     /// <summary>
@@ -133,6 +170,8 @@ public static class ClickAction
     private static ClickOutcome ClickAtPosition(UIElement element, double relativeX, double relativeY,
         bool doubleClick, ModifierKeys modifiers)
     {
+        if (IsolatedMode.RefuseRealInput(doubleClick ? "double-click" : "click") is { } refusal)
+            return new ClickOutcome("", null, refusal);
         var screenPoint = MouseInput.ToScreenPoint(element, relativeX, relativeY);
         var activated = MouseInput.BringToForeground(element);
 

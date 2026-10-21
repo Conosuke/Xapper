@@ -1,5 +1,7 @@
 using System.Windows;
 using System.Windows.Input;
+using System.Reflection;
+using System.Runtime.InteropServices;
 
 namespace Xapper.Inspector.Actions;
 
@@ -12,10 +14,9 @@ namespace Xapper.Inspector.Actions;
 ///
 /// Preview 이벤트만 넣고 WPF 가 본 이벤트(KeyDown/KeyUp)로 승격하게 둔다. 둘 다 넣으면 키가 두 번
 /// 눌린 것처럼 처리된다(측정 확인: Preview+Main 을 함께 넣으면 Backspace 가 두 글자를 지웠다). 글자 입력은
-/// 라우팅만으로는 텍스트가 들어가지 않으므로 <see cref="TextCompositionManager.TextInputEvent"/> 로 함께 넣는다
+/// 라우팅만으로는 텍스트가 들어가지 않으므로 <see cref="TextCompositionManager.StartComposition"/> 으로 함께 넣는다
 /// — 단 Ctrl/Alt 가 걸리면 실제 키보드처럼 글자는 넣지 않는다(Ctrl+A 가 "a" 를 타이핑하면 안 된다).
-/// Alt+글자 접근키(AccessKeyManager)는 Key.System 경로가 필요해 이 주입으로는 발동하지 않으며, Shift+글자는
-/// 글자를 준 그대로 넣는다(대문자는 호출자가 "A" 로 준다).
+/// Alt(단 Ctrl 없음)·F10 은 실제 WPF 키보드처럼 시스템 키로 표시한다. Shift+글자는 호출자가 준 문자를 넣는다.
 ///
 /// 수식키는 WPF 가 <c>GetKeyState</c> 로 OS 에 묻는다. 그래서 라우팅 이벤트로는 못 만들고,
 /// <see cref="InputSpoof"/> 로 그 답을 스푸프한 채 키를 넣는다. 후크를 쓸 수 없으면 수식키를 걸 방법이
@@ -26,6 +27,12 @@ namespace Xapper.Inspector.Actions;
 /// </summary>
 internal static class KeyboardInput
 {
+    #region Fields
+
+    private static readonly MethodInfo? MarkSystem = typeof(KeyEventArgs).GetMethod("MarkSystem", BindingFlags.Instance | BindingFlags.NonPublic);
+
+    #endregion
+
     #region Public Methods
 
     /// <summary>
@@ -39,6 +46,9 @@ internal static class KeyboardInput
     public static (string? Error, string Focused, string ModifierPath) Send(
         DependencyObject? refElement, string keyName, ModifierKeys modifiers)
     {
+        // Letter names in shortcuts are case-insensitive; their text is suppressed below.
+        if ((modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) != 0 && keyName.Length == 1 && char.IsLetter(keyName[0]))
+            keyName = keyName.ToLowerInvariant();
         if (!TryResolveStrokes(keyName, out var strokes))
             return (
                 $"Unknown key \"{keyName}\". Use a WPF Key name (F2, Enter, Escape, Tab, Down, ...), a single " +
@@ -82,11 +92,17 @@ internal static class KeyboardInput
         DependencyObject? refElement, List<(Key Key, string? Text)> strokes, ModifierKeys modifiers)
     {
         // 후크가 없으면 키를 넣기 전에(포커스를 옮기기 전에) 알린다 — 오류 경로에 부작용을 남기지 않는다.
-        if (modifiers != ModifierKeys.None && !InputSpoof.EnsureInstalled())
+        var hookAvailable = InputSpoof.EnsureInstalled();
+        if (modifiers != ModifierKeys.None && !hookAvailable)
             return (
                 "Modifier keys need the in-process input hook, which could not be installed in this process, so " +
                 "Ctrl/Shift/Alt cannot be held for an injected key. Send the key without modifiers.",
                 "", "");
+
+        if ((modifiers & (ModifierKeys.Control | ModifierKeys.Alt)) != 0 && strokes.Any(s => s.Key == Key.None))
+            return ("This character has no unmodified key in the current keyboard layout. Use a named key for the shortcut.", "", "");
+        if (MarkSystem is null && strokes.Any(s => IsSystemKey(s.Key, modifiers)))
+            return ("This WPF runtime does not expose system-key marking; no key was sent.", "", "");
 
         IInputElement? target;
         if (refElement is IInputElement requested)
@@ -125,14 +141,29 @@ internal static class KeyboardInput
         {
             foreach (var (key, text) in strokes)
             {
-                if (key != Key.None)
-                    RaiseKey(source, key, Keyboard.PreviewKeyDownEvent);
-
-                if (text is not null && !suppressText)
-                    RaiseText(target, text);
-
-                if (key != Key.None)
-                    RaiseKey(source, key, Keyboard.PreviewKeyUpEvent);
+                // A previous stroke may have opened an editor in a different presentation source.
+                if (Keyboard.FocusedElement is not DependencyObject focused
+                    || PresentationSource.FromDependencyObject(focused) is not { } currentSource)
+                    return ("Keyboard focus no longer has a presentation source; remaining keys were not sent.", FocusedTypeName(), modifierPath);
+                try
+                {
+                    var handled = false;
+                    if (key != Key.None)
+                    {
+                        if (hookAvailable) InputSpoof.BeginKey(KeyInterop.VirtualKeyFromKey(key));
+                        handled = RaiseKey(currentSource, key, Keyboard.PreviewKeyDownEvent, modifiers);
+                    }
+                    if (text is not null && !suppressText && !handled && Keyboard.FocusedElement is { } textTarget)
+                        RaiseText(textTarget, text);
+                    InputSpoof.EndKey();
+                    if (key != Key.None)
+                    {
+                        var upSource = Keyboard.FocusedElement is DependencyObject upTarget
+                            ? PresentationSource.FromDependencyObject(upTarget) : null;
+                        RaiseKey(upSource ?? currentSource, key, Keyboard.PreviewKeyUpEvent, modifiers);
+                    }
+                }
+                finally { InputSpoof.EndKey(); }
             }
         }
         finally
@@ -145,21 +176,22 @@ internal static class KeyboardInput
     }
 
     /// <summary>키 이벤트를 대상에 넣습니다. Preview 이벤트만 넣으면 WPF 가 본 이벤트로 승격한다.</summary>
-    private static void RaiseKey(PresentationSource source, Key key, RoutedEvent previewEvent)
+    private static bool RaiseKey(PresentationSource source, Key key, RoutedEvent previewEvent, ModifierKeys modifiers)
     {
-        InputManager.Current.ProcessInput(
-            new KeyEventArgs(Keyboard.PrimaryDevice, source, 0, key) { RoutedEvent = previewEvent });
+        var args = new KeyEventArgs(Keyboard.PrimaryDevice, source, Environment.TickCount, key) { RoutedEvent = previewEvent };
+        if (IsSystemKey(key, modifiers)) MarkSystem?.Invoke(args, null);
+        return InputManager.Current.ProcessInput(args);
     }
+
+    /// <summary>Matches Windows' system-key classification without turning Ctrl shortcuts into menu keys.</summary>
+    private static bool IsSystemKey(Key key, ModifierKeys modifiers) =>
+        (modifiers & ModifierKeys.Control) == 0 && ((modifiers & ModifierKeys.Alt) != 0 || key == Key.F10);
 
     /// <summary>글자를 TextInput 이벤트로 넣습니다. TextBox 등은 이 이벤트로 실제 텍스트를 받는다.</summary>
     private static void RaiseText(IInputElement target, string text)
     {
         var composition = new TextComposition(InputManager.Current, target, text);
-        InputManager.Current.ProcessInput(
-            new TextCompositionEventArgs(Keyboard.PrimaryDevice, composition)
-            {
-                RoutedEvent = TextCompositionManager.TextInputEvent
-            });
+        TextCompositionManager.StartComposition(composition);
     }
 
     /// <summary>
@@ -213,11 +245,12 @@ internal static class KeyboardInput
     /// <summary>글자에 대응하는 <see cref="Key"/> 를 돌려줍니다. 없으면 <see cref="Key.None"/>.</summary>
     private static Key KeyFromChar(char ch)
     {
-        if (ch is >= 'a' and <= 'z') return Key.A + (ch - 'a');
-        if (ch is >= 'A' and <= 'Z') return Key.A + (ch - 'A');
-        if (ch is >= '0' and <= '9') return Key.D0 + (ch - '0');
-        return Key.None;
+        var mapped = VkKeyScanW(ch);
+        return mapped == -1 || (mapped & 0xff00) != 0 ? Key.None : KeyInterop.KeyFromVirtualKey(mapped & 0xff);
     }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern short VkKeyScanW(char character);
 
     /// <summary>주입 후 키보드 포커스 요소의 타입 이름을 돌려줍니다.</summary>
     private static string FocusedTypeName()

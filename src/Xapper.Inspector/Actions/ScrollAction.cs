@@ -21,10 +21,16 @@ public static class ScrollAction
     /// <returns>성공 또는 실패 사유.</returns>
     public static ActionResult Execute(UIElement element, double horizontalPercent, double verticalPercent)
     {
+        if (horizontalPercent == -1 && verticalPercent == -1)
+            return ActionResult.Ok;
         // Priority 1: AutomationPeer IScrollProvider
         var peer = UIElementAutomationPeer.CreatePeerForElement(element);
         if (peer?.GetPattern(PatternInterface.Scroll) is IScrollProvider scroller)
         {
+            if (verticalPercent >= 0 && !scroller.VerticallyScrollable)
+                return ActionResult.Fail("Cannot scroll vertically: scrollable height is 0, or the provider exposes no vertical scroll range.");
+            if (horizontalPercent >= 0 && !scroller.HorizontallyScrollable)
+                return ActionResult.Fail("Cannot scroll horizontally: scrollable width is 0, or the provider exposes no horizontal scroll range.");
             scroller.SetScrollPercent(horizontalPercent, verticalPercent);
             return ActionResult.Ok;
         }
@@ -32,6 +38,10 @@ public static class ScrollAction
         // Priority 2: Direct ScrollViewer
         if (element is ScrollViewer scrollViewer)
         {
+            if (verticalPercent >= 0 && scrollViewer.ScrollableHeight <= 0)
+                return ActionResult.Fail("Cannot scroll vertically: scrollable height is 0; the content already fits in the viewport.");
+            if (horizontalPercent >= 0 && scrollViewer.ScrollableWidth <= 0)
+                return ActionResult.Fail("Cannot scroll horizontally: scrollable width is 0; the content already fits in the viewport.");
             if (horizontalPercent >= 0)
                 scrollViewer.ScrollToHorizontalOffset(
                     scrollViewer.ScrollableWidth * horizontalPercent / 100.0);

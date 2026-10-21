@@ -10,6 +10,15 @@ namespace Xapper.Tests;
 /// </summary>
 public class EventLogTests
 {
+    [Theory]
+    [InlineData("CanExecute", true)]
+    [InlineData("PreviewCanExecute", true)]
+    [InlineData("SelectionChanged", false)]
+    [InlineData("Click", false)]
+    public void Noise_RejectsCommandQueriesButKeepsActions(string name, bool expected)
+    {
+        Assert.Equal(expected, EventWatcher.IsNoise(name));
+    }
     #region Helpers
 
     private static LoggedEvent Entry(string name, string type = "Button", string? elementName = null)

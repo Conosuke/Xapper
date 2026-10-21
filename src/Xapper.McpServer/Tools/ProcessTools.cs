@@ -3,6 +3,7 @@ using System.Diagnostics;
 using ModelContextProtocol.Server;
 using Xapper.Injector;
 using Xapper.McpServer.Infrastructure;
+using Xapper.McpServer.Ipc;
 using Xapper.Protocol;
 using Xapper.Protocol.Messages.Responses;
 
@@ -102,9 +103,10 @@ public sealed class ProcessTools
             }
         }
 
+        InspectorClient attached;
         try
         {
-            await _sessionManager.AttachAsync(pid, linkedCts.Token);
+            attached = await _sessionManager.AttachAsync(pid, linkedCts.Token);
         }
         catch (Exception ex)
         {
@@ -113,7 +115,7 @@ public sealed class ProcessTools
 
         try
         {
-            if (await RefuseOtherBuildAsync(pid, linkedCts.Token) is { } refusal)
+            if (await RefuseOtherBuildAsync(pid, attached, linkedCts.Token) is { } refusal)
                 return refusal;
         }
         catch (Exception ex)
@@ -135,7 +137,13 @@ public sealed class ProcessTools
         "Start a WPF app with the inspector already inside it, then attach. Prefer this over xapper_attach " +
         "whenever you can start the app yourself: there is no injection step, so it is faster, and it catches " +
         "the app from its first moment - splash screens and login dialogs that open before the main window. " +
-        "The launched app becomes the active session; xapper_detach later disconnects without closing it. " +
+        "Before the first launch in each task, ask the user whether to test on an isolated desktop or visibly; " +
+        "reuse that answer throughout the task unless the user changes it. isolated=true keeps all app windows " +
+        "and popups off the person's screen and permits testing while locked. It is a Win32 desktop, not a " +
+        "security sandbox: files, registry, network and clipboard are shared. Nobody can see it directly; use " +
+        "render screenshots. Later attach, screen capture, foregrounding and real mouse fallback are unavailable. " +
+        "The launched app becomes the active session. Detach or server exit closes an isolated app and its " +
+        "children; ordinary launch stays running after detach. " +
         ".NET Framework 4.x apps work too, but have no startup hook: the inspector goes in the moment their first " +
         "window appears, so binding errors raised before that window are not heard. .NET Framework 3.5 and older " +
         "are not supported. For .NET 6+ apps, two things to know: the app's own child processes inherit the hook, " +
@@ -146,6 +154,7 @@ public sealed class ProcessTools
         [Description("Absolute path to the app's .exe")] string exePath,
         [Description("Command-line arguments to pass to the app")] string? args = null,
         [Description("Timeout in ms to wait for the app's inspector to come up (default 15000)")] int timeoutMs = 15000,
+        [Description("Launch on an unseen isolated desktop (default false). Ask once per task whether the user wants isolated or visible testing.")] bool isolated = false,
         CancellationToken ct = default)
     {
         if (!File.Exists(exePath))
@@ -184,11 +193,23 @@ public sealed class ProcessTools
             startInfo.Arguments = args;
         if (plan is LaunchPlan.StartupHook hook)
             startInfo.Environment["DOTNET_STARTUP_HOOKS"] = hook.InspectorDll;
+        startInfo.Environment[IsolatedDesktopEnvironment.Variable] = isolated ? "1" : "0";
 
         Process? started;
+        IsolatedDesktopApp? isolatedApp = null;
         try
         {
-            started = Process.Start(startInfo);
+            if (isolated)
+            {
+                var environment = new Dictionary<string, string> { [IsolatedDesktopEnvironment.Variable] = "1" };
+                if (plan is LaunchPlan.StartupHook isolatedHook)
+                    environment["DOTNET_STARTUP_HOOKS"] = isolatedHook.InspectorDll;
+                isolatedApp = IsolatedDesktopApp.Start(IsolatedDesktopApp.NextDesktopName(), exePath, args,
+                    startInfo.WorkingDirectory, environment);
+                started = isolatedApp.Process;
+            }
+            else
+                started = Process.Start(startInfo);
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
@@ -204,15 +225,22 @@ public sealed class ProcessTools
 
         // 앱의 출력은 읽어서 버린다. 읽지 않으면 파이프 버퍼가 차는 순간 앱이 콘솔 쓰기에서 멈춘다.
         // 입력은 바로 닫아, stdin 을 읽는 앱이 기다리지 않고 끝을 보게 한다.
-        process.StandardInput.Close();
-        process.OutputDataReceived += (_, _) => { };
-        process.ErrorDataReceived += (_, _) => { };
-        process.BeginOutputReadLine();
-        process.BeginErrorReadLine();
+        if (!isolated)
+        {
+            process.StandardInput.Close();
+            process.OutputDataReceived += (_, _) => { };
+            process.ErrorDataReceived += (_, _) => { };
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+        }
 
         var name = Path.GetFileNameWithoutExtension(exePath);
         var watch = Stopwatch.StartNew();
-        var pipePath = $@"\\.\pipe\{IpcPipeNames.ForProcess(process.Id)}";
+        var pid = process.Id;
+        var desktopName = isolatedApp?.DesktopName;
+        var closed = isolated
+            ? " The app was closed because an app on an isolated desktop cannot be reached later with xapper_attach."
+            : "";
 
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(timeoutMs);
@@ -220,42 +248,48 @@ public sealed class ProcessTools
         try
         {
             if (plan is LaunchPlan.InjectAfterStart
-                && await InjectAtFirstWindowAsync(process, name, timeoutCts.Token) is { } injectFailure)
-                return injectFailure;
+                && await InjectAtFirstWindowAsync(process, name, timeoutCts.Token, isolatedApp) is { } injectFailure)
+                return injectFailure + closed;
 
             // 훅은 진입점보다 먼저 돌지만 CLR 기동 자체에 시간이 걸린다. 고정 대기 대신 파이프가 생기는 즉시 붙는다.
-            while (!File.Exists(pipePath))
+            while (!Directory.EnumerateFiles(@"\\.\pipe\", IpcPipeNames.ForProcess(pid)).Any())
             {
                 if (process.HasExited)
-                    return $"Error: {name} exited with code {process.ExitCode} before the inspector came up.";
+                    return $"Error: {name} exited with code {process.ExitCode} before the inspector came up." + closed;
 
                 await Task.Delay(PipePollMs, timeoutCts.Token);
             }
 
-            await _sessionManager.AttachAsync(process.Id, timeoutCts.Token);
-
-            // 이 서버가 방금 넣은 훅이라 대개 같은 빌드다. 그래도 같은 판정을 거쳐야 attach 와 말이 어긋나지 않는다.
-            if (await RefuseOtherBuildAsync(process.Id, timeoutCts.Token) is { } refusal)
-                return refusal;
+            var refusal = await AttachLaunchedAsync(pid, isolatedApp, timeoutCts.Token);
+            isolatedApp = null;
+            if (refusal is not null)
+                return refusal + closed;
         }
         catch (OperationCanceledException)
         {
+            if (isolated) await _sessionManager.DetachAsync(pid);
             // 바깥 토큰이 취소된 것과 제한 시간이 지난 것은 원인이 다르다. 둘을 같은 문장으로 알리면
             // 호출자가 있지도 않은 기동 문제를 찾아 나서게 된다.
             if (ct.IsCancellationRequested)
-                return $"Cancelled while waiting for the inspector in {name} (pid {process.Id}). The app is running.";
+                return $"Cancelled while waiting for the inspector in {name} (pid {pid})." + (isolated ? closed : " The app is running.");
 
-            return $"Error: the inspector in {name} (pid {process.Id}) did not come up within {timeoutMs} ms. " +
-                   "The app is running - you can retry with xapper_attach.";
+            return $"Error: the inspector in {name} (pid {pid}) did not come up within {timeoutMs} ms." +
+                   (isolated ? closed : " The app is running - you can retry with xapper_attach.");
         }
         catch (Exception ex)
         {
-            return $"Error: connecting to {name} (pid {process.Id}) failed ({ex.Message}).";
+            // Attach may have succeeded just before ownership transfer or build validation failed.
+            if (isolated) await _sessionManager.DetachAsync(pid);
+            return $"Error: connecting to {name} (pid {pid}) failed ({ex.Message})." + closed;
         }
+        finally { isolatedApp?.Dispose(); }
 
         watch.Stop();
-        var launched = $"Launched process {process.Id} ({name}) in {watch.Elapsed.TotalSeconds:F1} s. " +
+        var launched = $"Launched process {pid} ({name}) in {watch.Elapsed.TotalSeconds:F1} s. " +
                        "The app may still be starting; UI tools wait for its WPF Application.";
+        if (isolated)
+            launched += $" It is on isolated desktop {desktopName}: its windows are not on the person's screen. " +
+                        "Use render screenshots; detach or server exit closes this app and its children.";
 
         return plan is LaunchPlan.InjectAfterStart afterStart
             ? launched + $" It runs on {afterStart.Runtime}, so the inspector went in when its first window " +
@@ -266,16 +300,18 @@ public sealed class ProcessTools
     /// <summary>
     /// 현재 연결된 WPF 프로세스와의 세션을 해제합니다.
     /// </summary>
-    [McpServerTool(Name = "xapper_detach"), Description("Detach from the currently attached WPF process")]
+    [McpServerTool(Name = "xapper_detach"), Description("Detach from the WPF process. Ordinary apps stay running; an isolated launched app and its children are closed because later attach is unavailable.")]
     public async Task<string> Detach(
         [Description("Process ID (optional, defaults to active session)")] int? pid = null,
         CancellationToken ct = default)
     {
+        var targetPid = pid ?? _sessionManager.ActiveProcessId;
+        var wasIsolated = targetPid is { } ownedPid && _sessionManager.IsIsolated(ownedPid);
         try
         {
             await _sessionManager.DetachAsync(pid, ct);
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException) when (targetPid is null)
         {
             // DetachAsync 는 활성 세션이 없을 때만 이 예외를 던진다 — 이미 분리된 상태이므로 오류가 아니다.
             // (다른 예외는 삼키지 않는다: 연결 정리가 실제로 실패한 것을 성공으로 위장하면 세션이 어긋난 채 남는다.)
@@ -287,6 +323,9 @@ public sealed class ProcessTools
         // 경우(다른 pid)는 세션이 살아 있으므로 그대로 둔다.
         await _notice.HideAsync(ct);
 
+        if (wasIsolated)
+            return $"Detached from process {targetPid}; the isolated app and its children were closed.";
+
         return pid.HasValue
             ? $"Detached from process {pid}."
             : "Detached from active session.";
@@ -295,6 +334,20 @@ public sealed class ProcessTools
     #endregion
 
     #region Private Methods
+
+    /// <summary>Connects and validates the launched identity; a concurrent active-session change cannot divert cleanup.</summary>
+    internal async Task<string?> AttachLaunchedAsync(int pid, IsolatedDesktopApp? app, CancellationToken ct)
+    {
+        var client = app is null
+            ? await _sessionManager.AttachAsync(pid, ct)
+            : await _sessionManager.AttachIsolatedAsync(app, ct);
+        try { return await RefuseOtherBuildAsync(pid, client, ct); }
+        catch
+        {
+            if (app is not null) await _sessionManager.DetachAsync(pid);
+            throw;
+        }
+    }
 
     /// <summary>
     /// 방금 띄운 .NET Framework 앱의 첫 창이 뜨기를 기다렸다가 Inspector 를 주입합니다.
@@ -306,15 +359,18 @@ public sealed class ProcessTools
     /// <param name="ct">제한 시간이 걸린 취소 토큰.</param>
     /// <returns>주입했으면 null, 아니면 실패 문장.</returns>
     /// <exception cref="OperationCanceledException">창이 뜨기 전에 제한 시간이 지난 경우.</exception>
-    private async Task<string?> InjectAtFirstWindowAsync(Process process, string name, CancellationToken ct)
+    private async Task<string?> InjectAtFirstWindowAsync(Process process, string name, CancellationToken ct,
+        IsolatedDesktopApp? isolatedApp = null)
     {
+        var window = IntPtr.Zero;
         while (true)
         {
             if (process.HasExited)
                 return $"Error: {name} exited with code {process.ExitCode} before its first window appeared.";
 
             process.Refresh();
-            if (process.MainWindowHandle != IntPtr.Zero)
+            window = isolatedApp is not null ? isolatedApp.FindVisibleWindow() : process.MainWindowHandle;
+            if (window != IntPtr.Zero)
                 break;
 
             await Task.Delay(PipePollMs, ct);
@@ -322,12 +378,15 @@ public sealed class ProcessTools
 
         try
         {
-            _injector.Inject(process.Id, waitForApplication: true);
+            if (isolatedApp is not null)
+                _injector.InjectLaunched(process.Id, window);
+            else
+                _injector.Inject(process.Id, waitForApplication: true);
             return null;
         }
         catch (Exception ex)
         {
-            return $"[INJECT FAILED] {ex.Message} The app is running (pid {process.Id}).";
+            return $"[INJECT FAILED] {ex.Message}" + (isolatedApp is null ? $" The app is running (pid {process.Id})." : $" (pid {process.Id}).");
         }
     }
 
@@ -337,9 +396,9 @@ public sealed class ProcessTools
     /// <param name="pid">연결한 프로세스.</param>
     /// <param name="ct">취소 토큰.</param>
     /// <returns>같은 빌드면 null, 아니면 거절 문장.</returns>
-    private async Task<string?> RefuseOtherBuildAsync(int pid, CancellationToken ct)
+    internal async Task<string?> RefuseOtherBuildAsync(int pid, InspectorClient client, CancellationToken ct)
     {
-        var pong = await _sessionManager.GetActive().PingAsync(ct);
+        var pong = await client.PingAsync(ct);
         var reported = pong.Payload is { } payload
             ? IpcSerializer.DeserializePayload<PongResponse>(payload).InspectorBuild
             : null;

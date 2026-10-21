@@ -5,6 +5,7 @@ using ModelContextProtocol.Server;
 using Xapper.McpServer.Infrastructure;
 using Xapper.Protocol;
 using Xapper.Protocol.Messages.Responses;
+using Xapper.McpServer.Ipc;
 
 namespace Xapper.McpServer.Tools;
 
@@ -62,7 +63,8 @@ public sealed class CaptureTools
         "rootRef set to it: that returns the same content as text for a fraction of the cost. To check one value, " +
         "call xapper_get_property or xapper_assert. When you do take a picture, narrow it with ref instead of " +
         "capturing the whole window at full size - ref narrows both modes, so choosing screen to catch a dialog " +
-        "does not force a full-desktop shot. Only annotate is render-only; with annotate a narrow shot also " +
+        "does not force a full-desktop shot. An isolated desktop permits render only; screen mode is refused, " +
+        "and find/snapshot expose separate popups and menus there. Only annotate is render-only; with annotate a narrow shot also " +
         "keeps the numbers readable.")]
     public async Task<IEnumerable<ContentBlock>> Screenshot(
         [Description("Element ref to capture (omit for the whole window)")] int? @ref = null,
@@ -75,7 +77,12 @@ public sealed class CaptureTools
         if (maxWidth is <= 0)
             return [new TextContentBlock { Text = "Error: maxWidth must be greater than 0. Omit it to get the image at full size." }];
 
-        var client = _sessionManager.GetActive();
+        InspectorClient client;
+        try { client = _sessionManager.GetActive(); }
+        catch (InvalidOperationException ex)
+        {
+            return [new TextContentBlock { Text = $"Error: {ex.Message}" }];
+        }
         var response = await client.ScreenshotAsync(@ref, maxWidth, mode, annotate, ct);
 
         if (response.Type == "error")

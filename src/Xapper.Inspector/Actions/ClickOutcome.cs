@@ -7,4 +7,4 @@ namespace Xapper.Inspector.Actions;
 /// </summary>
 /// <param name="Path">수행된 클릭 경로에 대한 사람이 읽을 수 있는 설명.</param>
 /// <param name="Warning">주의가 필요한 상황. 없으면 null.</param>
-public readonly record struct ClickOutcome(string Path, string? Warning);
+public readonly record struct ClickOutcome(string Path, string? Warning, string? Error = null);

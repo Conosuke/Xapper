@@ -3,6 +3,7 @@ using System.Text;
 using ModelContextProtocol.Server;
 using Xapper.Protocol;
 using Xapper.Protocol.Messages.Responses;
+using Xapper.McpServer.Ipc;
 
 namespace Xapper.McpServer.Tools;
 
@@ -35,7 +36,9 @@ public sealed class FindTools
         if (name == null && automationId == null && type == null && text == null)
             return "Error: Provide at least one search criteria (name, automationId, type, or text)";
 
-        var client = _sessionManager.GetActive();
+        InspectorClient client;
+        try { client = _sessionManager.GetActive(); }
+        catch (InvalidOperationException ex) { return $"Error: {ex.Message}"; }
         var response = await client.FindAsync(name, automationId, type, text, ct);
 
         return ResponseFormat.Find(response);
@@ -56,7 +59,9 @@ public sealed class FindTools
         if (maxAncestors < 0)
             return "Error: maxAncestors cannot be negative. Use 0 for the deepest element alone.";
 
-        var client = _sessionManager.GetActive();
+        InspectorClient client;
+        try { client = _sessionManager.GetActive(); }
+        catch (InvalidOperationException ex) { return $"Error: {ex.Message}"; }
         var response = await client.ElementAtAsync(x, y, maxAncestors, ct);
 
         if (response.Type == "error")

@@ -74,6 +74,10 @@ internal static class InputSpoof
     /// <summary>제스처 대상 창을 만든 UI 스레드. 제스처 동안 이 스레드가 묻는 버튼 상태에는 가짜로 답한다.</summary>
     private static volatile uint _targetThreadId;
 
+    [ThreadStatic]
+    private static int _injectedKey;
+    private static volatile uint _keyboardThreadId;
+
     private static bool _installAttempted;
     private static bool _installed;
 
@@ -174,6 +178,7 @@ internal static class InputSpoof
     /// <param name="modifiers">눌려 있다고 답할 수식키.</param>
     public static void BeginModifiers(ModifierKeys modifiers)
     {
+        _keyboardThreadId = GetCurrentThreadId();
         _modifiers = modifiers;
         _spoofModifiers = true;
     }
@@ -183,7 +188,14 @@ internal static class InputSpoof
     {
         _spoofModifiers = false;
         _modifiers = ModifierKeys.None;
+        _keyboardThreadId = 0;
     }
+
+    /// <summary>Holds one injected key down only on the thread routing that key event.</summary>
+    public static void BeginKey(int virtualKey) => _injectedKey = virtualKey;
+
+    /// <summary>Releases injected state before key-up, and on every exceptional exit.</summary>
+    public static void EndKey() => _injectedKey = 0;
 
     /// <summary>스푸프 중 커서가 있다고 답할 위치를 바꿉니다(드래그 이동).</summary>
     public static void SetPosition(Point screen)
@@ -225,6 +237,11 @@ internal static class InputSpoof
     private static bool TrySpoofKey(int virtualKey, out short state)
     {
         state = 0;
+        if (_injectedKey != 0 && virtualKey == _injectedKey)
+        {
+            state = PressedState;
+            return true;
+        }
 
         if (_spoofMouse)
         {
@@ -254,7 +271,7 @@ internal static class InputSpoof
         }
 
         // 키 주입 경로: 키는 디스패처 작업 안에서 라우팅되므로(SendMessage 아님) 스푸프를 조건 없이 답한다.
-        return _spoofModifiers && TrySpoofModifier(virtualKey, out state);
+        return _spoofModifiers && GetCurrentThreadId() == _keyboardThreadId && TrySpoofModifier(virtualKey, out state);
     }
 
     /// <summary>수식키 VK 면 요청된 조합에 따라 눌림/안 눌림을 답합니다.</summary>
