@@ -13,6 +13,7 @@ public sealed class RecordTools
     #region Fields
 
     private readonly ScreenRecorder _recorder;
+    private readonly SessionManager _sessionManager;
 
     #endregion
 
@@ -22,9 +23,10 @@ public sealed class RecordTools
     /// <see cref="RecordTools"/>의 새 인스턴스를 생성합니다.
     /// </summary>
     /// <param name="recorder">녹화를 실제로 맡는 녹화기.</param>
-    public RecordTools(ScreenRecorder recorder)
+    public RecordTools(ScreenRecorder recorder, SessionManager sessionManager)
     {
         _recorder = recorder;
+        _sessionManager = sessionManager;
     }
 
     #endregion
@@ -43,6 +45,9 @@ public sealed class RecordTools
         [Description("Frames per second, 1-30 (default 10)")] int fps = 10,
         CancellationToken ct = default)
     {
+        if (_sessionManager.ActiveProcessId is { } pid && _sessionManager.IsIsolated(pid))
+            return "Error: desktop recording cannot capture an app on an isolated desktop; it would record " +
+                   "the person's unrelated desktop instead. Use render screenshots to inspect this app.";
         return await _recorder.StartAsync(path, fps, ct)
                ?? $"Recording the desktop to {path} at {fps} fps. Call xapper_record_stop to finish the file.";
     }

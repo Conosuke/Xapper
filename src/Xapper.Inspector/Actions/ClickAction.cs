@@ -133,6 +133,8 @@ public static class ClickAction
     private static ClickOutcome ClickAtPosition(UIElement element, double relativeX, double relativeY,
         bool doubleClick, ModifierKeys modifiers)
     {
+        if (IsolatedMode.RefuseRealInput(doubleClick ? "double-click" : "click") is { } refusal)
+            return new ClickOutcome("", null, refusal);
         var screenPoint = MouseInput.ToScreenPoint(element, relativeX, relativeY);
         var activated = MouseInput.BringToForeground(element);
 

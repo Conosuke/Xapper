@@ -19,7 +19,7 @@ internal static class IsolatedMode
 
     /// <summary>Explains why falling back to real input would not reach the application.</summary>
     public static string? RefuseRealInput(string gesture) => !IsOn ? null :
-        $"Cannot perform the {gesture} via real mouse input on an isolated desktop. The in-process synthetic " +
+        $"Cannot perform the {gesture} using real mouse input on an isolated desktop. The in-process synthetic " +
         "path was unavailable (the input hook could not be installed, or another window of this app covers " +
         "the point). Real mouse input goes to the person's desktop, so no real input was sent. Choose a point " +
         "not covered by a popup or dialog, or use select, toggle, type, key, or scroll instead.";

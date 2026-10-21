@@ -692,6 +692,8 @@ public sealed class IpcServer
                 return IpcSerializer.CreateResponse(message.Id, new ActionResponse { Success = true, Message = hookSettled });
             }
             // 후킹을 걸 수 없으면 아래의 기존 좌표 클릭(실제 입력)으로 폴백한다.
+            if (IsolatedMode.RefuseRealInput(request.DoubleClick ? "double-click" : "click") is { } refusal)
+                return IpcSerializer.CreateError(message.Id, refusal);
         }
 
         var clickedAt = DateTime.UtcNow;
@@ -703,6 +705,8 @@ public sealed class IpcServer
         var (clickDone, outcome) = clickResult;
         if (!clickDone)
             return StillHandlingResponse(message.Id, what, request.Timeout);
+        if (outcome.Error is { } clickError)
+            return IpcSerializer.CreateError(message.Id, clickError);
 
         var posInfo = request.X.HasValue && request.Y.HasValue
             ? $" at ({request.X:F2},{request.Y:F2})"
@@ -732,7 +736,7 @@ public sealed class IpcServer
     /// <param name="real">실제 입력 제스처(스크린 좌표).</param>
     /// <param name="noun">경고 문구에 쓸 제스처 이름("click", "wheel").</param>
     /// <returns>수행 경로 설명, 필요하면 경고, 그리고 후킹 제스처가 정체됐는지(호출자가 핸들러 종료를 더 기다린다).</returns>
-    private static async Task<(string How, string? Warning, bool Stalled)> RunPointGesture(
+    private static async Task<(string How, string? Warning, bool Stalled, string? Error)> RunPointGesture(
         UIElement element, double rx, double ry, ModifierKeys modifiers,
         Func<IntPtr, Point, GestureResult> hooked, Action<Point> real, string noun)
     {
@@ -741,9 +745,12 @@ public sealed class IpcServer
 
         var result = hooked(target.Hwnd, target.Screen);
         if (result == GestureResult.Stalled)
-            return ("synthetic mouse input (no cursor movement)", null, true);
+            return ("synthetic mouse input (no cursor movement)", null, true, null);
         if (result == GestureResult.Delivered)
-            return ("synthetic mouse input (no cursor movement)", null, false);
+            return ("synthetic mouse input (no cursor movement)", null, false, null);
+
+        if (IsolatedMode.RefuseRealInput(noun) is { } refusal)
+            return ("", null, false, refusal);
 
         var activated = await Application.Current.Dispatcher.InvokeAsync(() => MouseInput.BringToForeground(element));
         RealModifierKeys.Press(modifiers);
@@ -759,7 +766,7 @@ public sealed class IpcServer
         var warning = activated
             ? null
             : $"the target window could not be brought to the foreground, so the {noun} may not have reached the control. Bring the window to the front and retry.";
-        return ("real mouse input", warning, false);
+        return ("real mouse input", warning, false, null);
     }
 
     /// <summary>
@@ -788,10 +795,12 @@ public sealed class IpcServer
         var ry = request.Y ?? 0.5;
 
         var withMods = modifiers == ModifierKeys.None ? "" : $" with {request.Modifiers?.Trim()}";
-        var (how, warning, stalled) = await RunPointGesture(element, rx, ry, modifiers,
+        var (how, warning, stalled, gestureError) = await RunPointGesture(element, rx, ry, modifiers,
             (hwnd, screen) => SyntheticMouse.TryRightClick(hwnd, screen, modifiers),
             screen => MouseInput.RightClickAt(screen),
-            "click");
+            "right-click");
+        if (gestureError is not null)
+            return IpcSerializer.CreateError(message.Id, gestureError);
         if (stalled && !await StalledHandlerFinishedAsync(request.Timeout))
             return StillHandlingResponse(message.Id, $"The right-click on ref={elementRef}", request.Timeout);
 
@@ -836,10 +845,12 @@ public sealed class IpcServer
         var ry = request.Y ?? 0.5;
 
         var withMods = modifiers == ModifierKeys.None ? "" : $" with {request.Modifiers?.Trim()}";
-        var (how, warning, stalled) = await RunPointGesture(element, rx, ry, modifiers,
+        var (how, warning, stalled, gestureError) = await RunPointGesture(element, rx, ry, modifiers,
             (hwnd, screen) => SyntheticMouse.TryWheel(hwnd, screen, request.Notches, modifiers),
             screen => MouseInput.WheelAt(screen, request.Notches),
             "wheel");
+        if (gestureError is not null)
+            return IpcSerializer.CreateError(message.Id, gestureError);
         if (stalled && !await StalledHandlerFinishedAsync(request.Timeout))
             return StillHandlingResponse(message.Id, $"The wheel on ref={elementRef}", request.Timeout);
 
@@ -1202,6 +1213,8 @@ public sealed class IpcServer
         else
         {
             // 후킹을 걸 수 없으면 실제 마우스 입력으로 폴백한다(Step 3에서 알림 2단계로 대체).
+            if (IsolatedMode.RefuseRealInput("drag") is { } refusal)
+                return IpcSerializer.CreateError(message.Id, refusal);
             bool activated;
             if ((source ?? target) is { } anchor)
                 activated = await Application.Current.Dispatcher.InvokeAsync(() => MouseInput.BringToForeground(anchor));
@@ -1368,6 +1381,8 @@ public sealed class IpcServer
         var mode = Bcl.IsBlank(request.Mode) ? ScreenshotModes.Render : request.Mode.Trim();
         var isScreen = mode.Equals(ScreenshotModes.Screen, StringComparison.OrdinalIgnoreCase);
         var isRender = mode.Equals(ScreenshotModes.Render, StringComparison.OrdinalIgnoreCase);
+        if (isScreen && IsolatedMode.RefuseScreenCapture() is { } refusal)
+            return IpcSerializer.CreateError(message.Id, refusal);
         if (!isScreen && !isRender)
             return IpcSerializer.CreateError(message.Id,
                 $"Unknown screenshot mode \"{mode}\". Use \"{ScreenshotModes.Render}\" to redraw the visual " +
@@ -1732,7 +1747,10 @@ public sealed class IpcServer
     private static void WarnAboutWindowsNotInTheImage(ScreenshotResponse response)
     {
         var otherWindows = DesktopCapture.CountVisibleWindows() - 1;
-        if (otherWindows > 0)
+        if (IsolatedMode.IsOn)
+            response.Warning = "This render shows only the captured visual tree. Separate popups, menus and " +
+                "dialogs are not in it; use find, snapshot, or list_windows to inspect them on the isolated desktop.";
+        else if (otherWindows > 0)
             response.Warning =
                 $"{otherWindows} other window(s) are open and are not in this image. Popups, context menus and " +
                 $"drop-downs are never in it either. Use mode=\"{ScreenshotModes.Screen}\" to capture what is " +

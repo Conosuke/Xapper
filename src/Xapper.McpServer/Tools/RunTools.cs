@@ -79,11 +79,12 @@ public sealed class RunTools
         }
 
         var pid = _sessionManager.ActiveProcessId ?? 0;
-        var runner = new ScriptRunner((msg, token) => client.SendAsync(msg, token), pid, _notice);
+        var isolated = _sessionManager.IsIsolated(pid);
+        var runner = new ScriptRunner((msg, token) => client.SendAsync(msg, token), pid, isolated ? null : _notice);
         var result = await runner.RunAsync(script, limit, ct);
 
         if (result.Outcome is ScriptOutcome.Fail or ScriptOutcome.Timeout)
-            result = await AttachScreenshot(result, client, ct);
+            result = await AttachScreenshot(result, client, isolated ? "render" : "screen", ct);
 
         return Render(result);
     }
@@ -93,11 +94,11 @@ public sealed class RunTools
     #region Private Methods
 
     /// <summary>실패·타임아웃 시 화면 스크린샷을 파일로 저장하고 경로를 결과에 붙인다. 저장 실패는 조용히 넘긴다.</summary>
-    private static async Task<ScriptResult> AttachScreenshot(ScriptResult result, InspectorClient client, CancellationToken ct)
+    private static async Task<ScriptResult> AttachScreenshot(ScriptResult result, InspectorClient client, string mode, CancellationToken ct)
     {
         try
         {
-            var response = await client.ScreenshotAsync(mode: "screen", ct: ct);
+            var response = await client.ScreenshotAsync(mode: mode, ct: ct);
             if (response.Type == "error" || response.Payload is not { } payload)
                 return result;
 

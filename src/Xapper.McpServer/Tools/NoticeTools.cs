@@ -41,6 +41,8 @@ public sealed class NoticeTools
         [Description("One line shown under the headline, e.g. what you are testing. Optional")] string? message = null,
         CancellationToken ct = default)
     {
+        if (_sessionManager.ActiveProcessId is { } pid && _sessionManager.IsIsolated(pid))
+            return "A notice is not needed for an app on an isolated desktop; its actions cannot drive the person's real mouse.";
         var (shown, error) = await _notice.ShowAsync(message, _sessionManager.ActiveProcessId, ct);
         return shown
             ? "Notice shown. Call xapper_notice_hide when you are done driving the app."
