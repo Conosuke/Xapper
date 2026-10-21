@@ -122,10 +122,30 @@ Inspector와 GenericInjector DLL은 McpServer에 **임베디드 리소스로 내
 ### **1. 프로세스 탐색 및 인젝션**
 - `xapper_list_processes` : 실행 중인 WPF 프로세스 목록 조회
 - `xapper_attach` : P/Invoke 네이티브 인젝션으로 대상 프로세스에 Inspector DLL 주입
-- `xapper_launch` : 앱을 직접 띄우면서 Inspector 를 함께 태운다. .NET 런타임의 startup hook(`DOTNET_STARTUP_HOOKS`)이 앱의 진입점보다 먼저 돌므로 주입 절차도, 그 뒤의 고정 2초 대기도 없어 attach 보다 빠르고(TestApp 실측 launch 0.9초 vs attach 2.1~2.8초), 주 창보다 먼저 뜨는 스플래시·로그인 창까지 사정권에 들어온다. 띄운 앱이 활성 세션이 되며 `xapper_detach` 는 연결만 끊는다(앱은 계속 실행). .NET Framework 4.x 앱에는 startup hook 이 없으므로 띄운 뒤 첫 창이 뜨는 즉시 주입한다 — 그 창보다 먼저 지나간 바인딩 오류는 들리지 않는다. 띄운 앱의 표준 입출력은 서버와 분리되므로 앱이 콘솔에 쓰는 내용이 MCP 통신을 깨뜨리지 않는다. .NET 6+ 앱에는 두 가지 제약이 있다. 첫째, 환경변수는 대상 앱이 띄우는 자식 프로세스에도 상속되기 때문에, 앱보다 낮은 .NET 버전에서 도는 보조 실행 파일이 있다면 그 프로세스가 기동에 실패한다. 이런 앱에는 launch 대신 attach 를 사용한다. 둘째, 트리밍된 self-contained 빌드는 런타임이 startup hook 기능 자체를 제외하므로 훅이 조용히 로드되지 않고 제한 시간까지 기다린 뒤 실패한다
+- `xapper_launch` : 앱을 직접 띄우면서 Inspector 를 함께 태운다. .NET 런타임의 startup hook(`DOTNET_STARTUP_HOOKS`)이 앱의 진입점보다 먼저 돌므로 주입 절차도, 그 뒤의 고정 2초 대기도 없어 attach 보다 빠르고(TestApp 실측 launch 0.9초 vs attach 2.1~2.8초), 주 창보다 먼저 뜨는 스플래시·로그인 창까지 사정권에 들어온다. 띄운 앱이 활성 세션이 되며 `xapper_detach` 는 일반 실행에서는 연결만 끊고, 격리 실행에서는 앱과 자식도 종료한다. .NET Framework 4.x 앱에는 startup hook 이 없으므로 띄운 뒤 첫 창이 뜨는 즉시 주입한다 — 그 창보다 먼저 지나간 바인딩 오류는 들리지 않는다. 띄운 앱의 표준 입출력은 서버와 분리되므로 앱이 콘솔에 쓰는 내용이 MCP 통신을 깨뜨리지 않는다. .NET 6+ 앱에는 두 가지 제약이 있다. 첫째, 환경변수는 대상 앱이 띄우는 자식 프로세스에도 상속되기 때문에, 앱보다 낮은 .NET 버전에서 도는 보조 실행 파일이 있다면 그 프로세스가 기동에 실패한다. 이런 앱에는 launch 대신 attach 를 사용한다. 둘째, 트리밍된 self-contained 빌드는 런타임이 startup hook 기능 자체를 제외하므로 훅이 조용히 로드되지 않고 제한 시간까지 기다린 뒤 실패한다
 - `xapper_detach` : Named Pipe 연결 해제 및 정리
 - Named Pipe 기반 IPC (4바이트 LE 길이 접두사 + UTF-8 JSON)
 - 응답을 끝까지 읽지 못한 연결은 이후 메시지 경계가 어긋나므로 폐기된다. 다음 호출은 재부착을 요구하는 오류를 낸다
+
+### Isolated launch
+
+Before the first launch in each task, ask whether to test isolated or visibly and reuse that
+answer until the user changes it. `xapper_launch` accepts `isolated: true` (default false).
+It creates a separate **Win32 desktop**, keeping all app windows, drop-downs, menus, and dialogs
+off the person's screen and allowing testing while the workstation is locked. This is not a
+Win+Tab virtual desktop, VM, or security sandbox: files, registry, network, and clipboard are shared.
+
+Nobody can view those windows directly, so report what you observed. Screenshots must use
+`mode="render"`; use find/snapshot for separate popups and menus. Screen capture, foregrounding,
+recording, and later attach are unavailable. Notices are not needed. Synthetic gestures still
+work; if real mouse fallback would be required, the action is refused without sending input.
+**Detach or server exit closes the isolated app and its children.** Use launch again afterward.
+Omit `isolated` for visible testing; ordinary apps remain running after detach.
+
+Keyboard injection uses WPF system keys for Alt without Ctrl and F10 without Ctrl. Text goes
+through PreviewTextInput filters, handled key-downs suppress text, and typing follows the current
+focus when an editor opens. Characters requiring layout modifiers are sent as text rather than
+misleading base-key events.
 
 ### **2. UI 트리 스냅샷**
 - `xapper_snapshot` : Visual Tree를 계층적 텍스트로 반환
@@ -151,7 +171,7 @@ Inspector와 GenericInjector DLL은 McpServer에 **임베디드 리소스로 내
 ### **4. UI 자동 조작**
 - 공통: 조작이 모달 대화상자(MessageBox 등)를 열면 그 창이 닫힐 때까지 기다리지 않는다 — `timeout` 뒤 "전달됐지만 앱이 아직 처리 중" 으로 응답하고, 대화상자가 떠 있는 동안에도 조회 도구는 동작한다(Win32 대화상자는 스냅샷에 안 보이므로 `xapper_screenshot mode="screen"` 으로 확인)
 - 공통: 후킹 경로 마우스 제스처는 앱이 메시지 하나를 250 ms 안에 처리하지 못하면(느린 핸들러·모달) 스푸프를 즉시 끈다 — Xapper 가 조작하는 동안 사람의 실제 마우스가 그 앱에서 한참 안 먹던 문제를 이 시간으로 묶는다. 응답은 그와 별개로 핸들러가 끝나기를 `timeout` 까지 기다리므로 수백 ms 걸리는 핸들러는 정상 완료로 돌아온다(드래그는 이 경우 일찍 끝났을 수 있다는 경고를 붙인다). OLE 드래그앤드롭(`DragDrop.DoDragDrop`)은 실제 커서를 따르므로 무입력으로는 완성되지 않는다
-- `xapper_click` : 버튼/요소 클릭. 좌표를 주지 않으면 AutomationPeer → RaiseEvent 폴백(빠르지만 히트테스트를 건너뛰므로 가려진 요소도 눌림), 좌표를 주면 그 지점을 실제 히트테스트를 거쳐 클릭한다. 기본은 대상 프로세스 안에서 몰아(user32 후킹 + WM 메시지) 실제 커서·포커스를 건드리지 않으므로 작업 중에도 쓸 수 있고, 그 경로를 설치할 수 없거나 같은 앱의 팝업·대화상자가 그 지점을 덮고 있을 때만 실제 마우스 입력으로 폴백한다(사용자가 앞에 띄운 다른 프로그램 창은 덮고 있어도 관통한다). 어느 경로였는지(synthetic / real mouse input)가 응답에 표시되며, 접근성 경로는 큐가 비워질 때까지 기다렸다가 반환한다
+- `xapper_click` : 버튼/요소 클릭. 좌표를 주지 않으면 Invoke·Toggle·미선택 항목 Select·버튼 ClickEvent를 쓰고, 그 경로가 없으면 가운데(0.5, 0.5) 합성 좌표 클릭을 쓴다(이벤트 경로는 히트테스트를 건너뛰므로 가려진 요소도 눌림). 버튼은 Hover 모드 외에는 먼저 포커스를 받아 편집 값을 확정한다, 좌표를 주면 그 지점을 실제 히트테스트를 거쳐 클릭한다. 기본은 대상 프로세스 안에서 몰아(user32 후킹 + WM 메시지) 실제 커서·포커스를 건드리지 않으므로 작업 중에도 쓸 수 있고, 그 경로를 설치할 수 없거나 같은 앱의 팝업·대화상자가 그 지점을 덮고 있을 때만 실제 마우스 입력으로 폴백한다(사용자가 앞에 띄운 다른 프로그램 창은 덮고 있어도 관통한다). 어느 경로였는지(synthetic / real mouse input)가 응답에 표시되며, 접근성 경로는 큐가 비워질 때까지 기다렸다가 반환한다
   - 후킹 경로가 안 될 때의 폴백만 SendInput으로 위치 기반 클릭 (듀얼 모니터/DPI 대응) — 이 경우에만 물리 커서를 옮기고 대상 창에 포커스를 넘긴다
   - 클릭/더블클릭/드래그/우클릭/휠 모두 `modifiers` 로 Ctrl/Shift/Alt 를 걸 수 있다(후킹 경로에서는 스푸프, 실제입력 폴백에서는 실제 키를 눌렀다 뗀다)
 - `xapper_doubleclick` : 좌표 지점 더블클릭. 더블클릭은 특정 위치에서 일어나는 제스처라 x/y 필수(그리드 행/셀을 더블클릭해 편집기 열기 등). 클릭과 같은 후킹 경로(커서 미이동)를 쓰고, 두 번의 누름을 시스템 더블클릭 시간 안에 붙여 보내 한 번의 더블클릭으로 인식시킨다 — xapper_click 을 두 번 부르는 것으로는 보장되지 않는다
@@ -309,7 +329,8 @@ AI 에이전트가 자동으로 수행하는 흐름:
 |------|------|---------------|
 | `xapper_list_processes` | WPF 프로세스 목록 | - |
 | `xapper_attach` | 프로세스 인젝션 | `pid` |
-| `xapper_detach` | 연결 해제 | - |
+| `xapper_launch` | 앱 시작 (격리 실행 선택) | `exePath`, `args`, `timeoutMs`, `isolated` |
+| `xapper_detach` | 연결 해제 (격리 앱은 종료) | `pid` |
 | `xapper_snapshot` | UI 트리 스냅샷 | `maxDepth` |
 | `xapper_find` | 요소 검색 | `name`, `automationId`, `type`, `text` |
 | `xapper_element_at` | 좌표의 요소 조회 | `x`, `y`, `maxAncestors` (선택) |
@@ -319,10 +340,10 @@ AI 에이전트가 자동으로 수행하는 흐름:
 | `xapper_wheel` | 마우스 휠 | `ref`, `notches`, `x`, `y`, `modifiers` (x/y/modifiers 선택) |
 | `xapper_type` | 텍스트 입력 | `text`, `ref`(선택, 없으면 포커스 요소), `clear`(선택) |
 | `xapper_key` | 키 입력 | `key`, `modifiers`(선택), `ref`(선택) |
-| `xapper_select` | 항목 선택 | `ref`, `item` |
+| `xapper_select` | 항목 선택 | `ref` 또는 `target`, `itemIndex`, `itemText` |
 | `xapper_toggle` | 토글 | `ref` |
 | `xapper_expand` | 펼치기/접기 | `ref`, `expand` |
-| `xapper_scroll` | 스크롤 | `ref`, `direction`, `amount` |
+| `xapper_scroll` | 스크롤 | `ref` 또는 `target`, `verticalPercent`, `horizontalPercent` |
 | `xapper_drag` | 드래그 | `sourceRef`, `targetRef`, `offsetX`/`offsetY`, 화면 좌표 (모두 선택), `modifiers`(선택) |
 | `xapper_get_property` | 속성 읽기 | `ref`, `propertyName` |
 | `xapper_get_bindings` | 바인딩 조회 | `ref` |

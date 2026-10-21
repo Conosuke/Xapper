@@ -40,7 +40,15 @@
 **인자:**
 - `exePath` (string, 필수): 앱의 절대 경로
 - `args` (string, 선택): 명령줄 인자
-- `timeoutMs` (int, 선택, 기본 15000): 시작 대기 시간 (1000~300000)
+- `timeoutMs` (int, 선택, 기본 15000): 시작 대기 시간 (0보다 커야 함)
+- `isolated` (bool, optional, default false): launch on a separate unseen Win32 desktop.
+
+Before the first launch in a task, ask whether to test isolated or visibly and reuse that answer
+until the user changes it. `isolated=true` keeps all windows and popups off the person's screen
+and supports testing while locked. It shares files, registry, network, and clipboard with the
+ordinary desktop. Nobody can view its windows directly: report observations and use render
+screenshots. Screen capture, foregrounding, recording, later attach, and real-mouse fallback
+are unavailable; notices are not needed. Detach or server exit closes the app and its children.
 
 **응답:**
 ```json
@@ -82,7 +90,7 @@
 ---
 
 ### xapper_detach
-현재 세션 분리 (앱 닫지 않음).
+Detach the current session. Ordinary apps remain running; isolated apps and their children close.
 
 **인자:** 없음
 
@@ -137,8 +145,13 @@
 }
 ```
 
-`<path>`: `accessibility`, `button event`, `routed event`, `real mouse` 중 하나  
+`<path>`: automation Invoke/Toggle/SelectionItem, button event, synthetic mouse input, or real mouse input.
 `<warning>`: 부연 설명 (예: "not foreground" 등) 또는 빈 문자열
+
+Without an event path, a coordinate-free click uses synthetic input at the center `(0.5, 0.5)`.
+Buttons receive keyboard focus before activation, except Hover mode, so edited values commit
+before a Save handler runs. Four direct routed mouse events are no longer a fallback. Isolation
+refuses real input when synthetic delivery is unavailable; it never sends it to the person's desktop.
 
 **응답 (실패):**
 ```json

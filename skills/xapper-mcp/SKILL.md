@@ -25,6 +25,20 @@ A .NET Framework 4.x app is still launched the same way, but it has no startup h
 goes in the moment its first window appears, and the launch response says so. Anything that happened
 before that window - including its binding errors - was not heard.
 
+Before the first launch in each task, ask once:
+**"분리된 환경에서 테스트할까요, 직접 보이도록 테스트할까요?"**
+Reuse the answer throughout that task; change it only when the user asks to.
+
+- **Isolated testing:** pass `isolated: true`. Windows, drop-downs, menus, and dialogs stay off the
+  person's screen, including while the workstation is locked. This is a separate Win32 desktop,
+  not a Win+Tab virtual desktop or a security sandbox; files, registry, network, and clipboard remain
+  shared. Nobody can see the windows directly, so report what you observed. Screenshots must use
+  `mode="render"`; find/snapshot show separate popups and menus. Later attach is unavailable.
+  Foregrounding and screen recording are refused; notices are not needed. If a gesture needs real
+  mouse fallback it is refused without sending input. **Detach or server exit closes the app and
+  its children**, so launch again for another session.
+- **Visible testing:** omit `isolated` (its default is false) and use the existing workflow.
+
 ## 2. Recall before you look
 
 Call `xapper_screen_recall` **every time the screen changes**, not once at the start of the
@@ -64,12 +78,13 @@ you, and it is worth more than the picture you saved.
 Every action reports which path it took and what happened. Read that instead of taking a picture to
 find out.
 
-**Click never refuses, so its word alone means little.** It tries an accessibility pattern, then a
-button click event, and failing both it raises simulated routed mouse events at any UIElement -
-reporting success either way. On a control that offers nothing, click is the action that still does
-something. Read the path named in the response rather than trusting the word "Clicked". When the
-element needs genuine input - it hit-tests, captures the mouse, or handles `MouseDown` rather than
-`MouseLeftButtonDown` - pass `x`/`y` so real mouse messages are delivered.
+**Read the click path and any refusal.** A coordinate-free click uses Invoke, Toggle, selection of an
+unselected item, or a button click event. Buttons receive keyboard focus before activation (except
+Hover mode), so the previous editor commits its value before Save runs. Without an event path,
+click uses the same synthetic mouse path at the center `(0.5, 0.5)` as a coordinate click. This
+reaches parent mouse handlers; the four direct routed-mouse-event fallback is gone. Pass `x`/`y`
+when the intended point is elsewhere. A success response describes delivery; verify the resulting
+selection or value when that outcome matters.
 
 **Five actions can refuse outright.** `type`, `toggle`, `expand`, `select` and `scroll` each try an
 accessibility pattern and one stock WPF type, and say the element does not support the action when
@@ -80,9 +95,10 @@ click into it with `x`/`y` and send `xapper_key` instead.
 process: real window messages with the OS cursor reads briefly spoofed, so WPF accepts them as
 genuine while the physical pointer never moves. The person can keep working. Only when that path
 cannot be set up does Xapper fall back to real mouse input, which does move the pointer and take
-focus - and the response says which one ran.
+focus - and the response says which one ran. On an isolated desktop that fallback is refused,
+with no real input sent; choose an uncovered point or use select/toggle/type/key/scroll instead.
 
-When you expect the real one, call `xapper_notice_show` first so a banner warns the person off. If
+For visible testing, when you expect the real one, call `xapper_notice_show` first so a banner warns the person off. If
 you raise that banner, you own it: call `xapper_notice_hide` the moment that stretch of work ends,
 and again before you finish the task. A banner you raised and walked away from sits over the
 person's screen until they close it by hand. The one the server raises for you when an action

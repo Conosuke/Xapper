@@ -235,6 +235,26 @@ changes. A commit is not evidence that its Windows runtime tests passed.
 
 ## Plan self-review and execution handoff
 
+### Execution record (2026-10-21)
+
+The user approved native implementation. Tasks 1-6 have product implementations
+and regression tests committed; the full Debug solution build across all
+existing target frameworks passed with **0 warnings and 0 errors** after the
+changes. Documentation and tool descriptions for Task 7 are updated.
+
+Windows test execution is **not complete**. The existing xUnit command was
+attempted here and aborted because Microsoft.WindowsDesktop.App 9.0 is
+unavailable on Linux; no test cases executed. Unchecked runtime-test steps
+above remain acceptance work, including tests that need OS failure injection,
+real TestApp/DevExpress interaction, and a locked Windows session. Compilation
+of regression tests does not establish their runtime outcome. No skipped
+Windows operation is represented as a passing test.
+
+The reference-skill retrieval baseline found missing launch-choice/isolation
+guidance and obsolete click descriptions. A fresh retrieval check after the
+update correctly recovered the required question, all isolated restrictions,
+center-click behavior, and visible-mode notice ownership, finding no conflict.
+
 Coverage: A maps to Tasks 1-3 and 7; B to Tasks 4-5 and 7; C to Tasks 2, 6,
 and 7. The five review-focus conditions have tests in their owning tasks.
 Interfaces above are the names later tasks consume. Native failures that

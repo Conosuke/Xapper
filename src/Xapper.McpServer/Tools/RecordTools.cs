@@ -39,7 +39,8 @@ public sealed class RecordTools
         "most of all a run that failed. It captures every monitor and every window on them, not only the app: on " +
         "a machine a person is using, their other windows end up in the video, so use it on unattended machines. " +
         "The file plays up to the last second written even if the run is killed. One recording at a time; finish " +
-        "it with xapper_record_stop. Needs ffmpeg on the server's PATH.")]
+        "it with xapper_record_stop. Needs ffmpeg on the server's PATH. Refused for an active isolated session: " +
+        "the video would contain the person's desktop rather than that app. Use render screenshots instead.")]
     public async Task<string> Start(
         [Description("Absolute path of the .mp4 to write; its folder is created if missing")] string path,
         [Description("Frames per second, 1-30 (default 10)")] int fps = 10,

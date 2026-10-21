@@ -36,7 +36,8 @@ public sealed class NoticeTools
         "Show a topmost 'Xapper 조작중' banner over the target app so the person at the desk knows the mouse is " +
         "about to be driven and waits. Call it before a stretch of actions that will use real mouse input (a " +
         "response said 'via real mouse input', or the in-process path is unavailable), and xapper_notice_hide " +
-        "when that stretch is over. The banner takes no focus and lets clicks through; it never blocks actions.")]
+        "when that stretch is over. The banner takes no focus and lets clicks through; it never blocks actions. " +
+        "For an isolated session a notice is not needed and no banner is shown.")]
     public async Task<string> Show(
         [Description("One line shown under the headline, e.g. what you are testing. Optional")] string? message = null,
         CancellationToken ct = default)

@@ -24,20 +24,22 @@ public sealed class ActionTools
     }
 
     [McpServerTool(Name = "xapper_click"), Description(
-        "Click an element. Without x/y: accessibility Invoke/Toggle or the ButtonBase click event - fast, no " +
-        "cursor, works behind other windows, but skips hit-testing (a covered control still 'succeeds'; the " +
-        "response warns). With x/y (0-1 within the element): a real hit-tested click driven inside the target " +
+        "Click an element. Without x/y: Invoke/Toggle, unselected SelectionItem Select, or ButtonBase click; " +
+        "buttons receive keyboard focus first (except Hover), committing edits before Save. Event activation " +
+        "skips hit-testing and warns if covered. Without an event path, click uses synthetic mouse input at " +
+        "the center (0.5,0.5), reaching parent mouse handlers. With x/y (0-1 within the element): a hit-tested click driven inside the target " +
         "process - no cursor or focus change, even under your own windows; falls back to real mouse input " +
         "only if that path is unavailable or the app's own popup/dialog covers the point (the response says " +
-        "which). Use x/y for controls that need genuine mouse input (DevExpress grids). modifiers need x/y. " +
+        "which). On an isolated desktop real mouse fallback is refused without sending input. " +
+        "Use x/y to choose another point. modifiers need x/y. " +
         "If the click opens a modal dialog the call returns as soon as it appears, naming it - answer it with " +
         "xapper_message_box or xapper_file_dialog. The response names the " +
         "path taken - check it when a click seems to do nothing. For a double-click use xapper_doubleclick.")]
     public async Task<string> Click(
         [Description(ToolDescriptions.Ref)] int? @ref = null,
         [Description(ToolDescriptions.Target)] string? target = null,
-        [Description("X 0-1 within the element; omit for the event-based click")] double? x = null,
-        [Description("Y 0-1 within the element; omit for the event-based click")] double? y = null,
+        [Description("X 0-1 within the element; omit for event activation or synthetic center fallback")] double? x = null,
+        [Description("Y 0-1 within the element; omit for event activation or synthetic center fallback")] double? y = null,
         [Description("Timeout in ms (default 5000), spent twice: waiting for the element, then for the click to be processed")] int timeout = 5000,
         [Description(ModifiersDescription)] string? modifiers = null,
         CancellationToken ct = default)

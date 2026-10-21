@@ -135,7 +135,13 @@ public sealed class ProcessTools
         "Start a WPF app with the inspector already inside it, then attach. Prefer this over xapper_attach " +
         "whenever you can start the app yourself: there is no injection step, so it is faster, and it catches " +
         "the app from its first moment - splash screens and login dialogs that open before the main window. " +
-        "The launched app becomes the active session; xapper_detach later disconnects without closing it. " +
+        "Before the first launch in each task, ask the user whether to test on an isolated desktop or visibly; " +
+        "reuse that answer throughout the task unless the user changes it. isolated=true keeps all app windows " +
+        "and popups off the person's screen and permits testing while locked. It is a Win32 desktop, not a " +
+        "security sandbox: files, registry, network and clipboard are shared. Nobody can see it directly; use " +
+        "render screenshots. Later attach, screen capture, foregrounding and real mouse fallback are unavailable. " +
+        "The launched app becomes the active session. Detach or server exit closes an isolated app and its " +
+        "children; ordinary launch stays running after detach. " +
         ".NET Framework 4.x apps work too, but have no startup hook: the inspector goes in the moment their first " +
         "window appears, so binding errors raised before that window are not heard. .NET Framework 3.5 and older " +
         "are not supported. For .NET 6+ apps, two things to know: the app's own child processes inherit the hook, " +
@@ -300,7 +306,7 @@ public sealed class ProcessTools
     /// <summary>
     /// 현재 연결된 WPF 프로세스와의 세션을 해제합니다.
     /// </summary>
-    [McpServerTool(Name = "xapper_detach"), Description("Detach from the currently attached WPF process")]
+    [McpServerTool(Name = "xapper_detach"), Description("Detach from the WPF process. Ordinary apps stay running; an isolated launched app and its children are closed because later attach is unavailable.")]
     public async Task<string> Detach(
         [Description("Process ID (optional, defaults to active session)")] int? pid = null,
         CancellationToken ct = default)
